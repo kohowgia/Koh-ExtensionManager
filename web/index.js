@@ -69,9 +69,9 @@ app.registerExtension({
                 .em-plugin-name { font-weight: 500; color: #ddd; overflow: hidden; text-overflow: ellipsis; }
                 .em-plugin-remote { color: #666; overflow: hidden; text-overflow: ellipsis; }
                 .em-plugin-commit { font-family: monospace; color: #888; font-size: 11px; }
-                .em-plugin-actions { display: flex; gap: 4px; }
+                .em-plugin-actions { display: flex; gap: 4px; align-items: center; }
                 .em-plugin-btn {
-                    flex: 0 !important; padding: 0 8px !important; height: 24px !important;
+                    flex: 0 !important; padding: 0 7px !important; height: 24px !important;
                     font-size: 11px !important; white-space: nowrap;
                 }
                 .em-btn {
@@ -412,7 +412,7 @@ app.registerExtension({
                             <col style="width:80px;">
                             <col style="width:140px;">
                             <col style="width:90px;">
-                            <col style="width:220px;">
+                            <col style="width:360px;">
                         </colgroup>
                         <thead>
                             <tr>
@@ -438,7 +438,7 @@ app.registerExtension({
                             <col style="width:80px;">
                             <col style="width:140px;">
                             <col style="width:90px;">
-                            <col style="width:220px;">
+                            <col style="width:360px;">
                         </colgroup>
                         <tbody id="em-plugin-tbody"></tbody>
                     </table>
@@ -465,6 +465,38 @@ app.registerExtension({
                 if (p.has_update)           return `<span class="em-plugin-badge em-badge-yellow">有更新</span>`;
                 if (p.has_update === false) return `<span class="em-plugin-badge em-badge-green">最新</span>`;
                 return `<span class="em-plugin-badge em-badge-gray">未检查</span>`;
+            }
+
+            async function repairPlugin(p, clean, btn) {
+                const title = clean ? "重装" : "修复";
+                const message = clean
+                    ? `确认重装 "${p.name}"？\n\n这会恢复远端版本，并删除本地额外文件（包括 .gitignore 忽略的文件）。`
+                    : `确认修复 "${p.name}"？\n\n这会恢复缺失或被修改的仓库文件，但保留本地额外文件。`;
+                if (!confirm(message)) return;
+
+                const oldText = btn.textContent;
+                btn.disabled = true;
+                btn.textContent = title + "中";
+                try {
+                    const res = await fetch("/extension_manager/plugins/repair", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({name: p.name, clean})
+                    });
+                    const json = await res.json();
+                    if (json.status === "success") {
+                        alert(`${p.name} ${title}完成:\n${json.output || "完成"}`);
+                        loadPlugins(false);
+                    } else {
+                        alert(`${title}失败: ${json.msg}`);
+                        btn.disabled = false;
+                        btn.textContent = oldText;
+                    }
+                } catch (e) {
+                    alert("请求失败: " + e);
+                    btn.disabled = false;
+                    btn.textContent = oldText;
+                }
             }
 
             function renderTable(plugins) {
@@ -549,8 +581,22 @@ app.registerExtension({
                         btnVersion.textContent = "切换版本";
                         btnVersion.onclick = () => openVersionModal(p.name, () => loadPlugins(false));
 
+                        const btnRepair = document.createElement("button");
+                        btnRepair.className = "em-btn em-plugin-btn";
+                        btnRepair.textContent = "修复";
+                        btnRepair.title = "恢复缺失或被修改的仓库文件，保留本地额外文件";
+                        btnRepair.onclick = () => repairPlugin(p, false, btnRepair);
+
+                        const btnReinstall = document.createElement("button");
+                        btnReinstall.className = "em-btn em-plugin-btn em-btn-danger";
+                        btnReinstall.textContent = "重装";
+                        btnReinstall.title = "恢复远端版本，并清理本地额外文件";
+                        btnReinstall.onclick = () => repairPlugin(p, true, btnReinstall);
+
                         actions.appendChild(btnUpdate);
                         actions.appendChild(btnVersion);
+                        actions.appendChild(btnRepair);
+                        actions.appendChild(btnReinstall);
                     }
 
                     const btnUninstall = document.createElement("button");

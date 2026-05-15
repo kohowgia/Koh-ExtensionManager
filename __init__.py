@@ -69,6 +69,53 @@ def _get_plugin_info(plugin_dir, check_update=False):
 
 # ================ 路由 ================
 
+def _get_git_plugin_dir(name):
+    nodes_dir = _get_custom_nodes_dir()
+    plugin_dir = os.path.normpath(os.path.join(nodes_dir, name))
+    if not plugin_dir.startswith(os.path.normpath(nodes_dir) + os.sep):
+        return None, "Invalid path"
+    if not os.path.isdir(plugin_dir):
+        return None, "Plugin not found"
+    if not os.path.isdir(os.path.join(plugin_dir, ".git")):
+        return None, "Plugin is not a git repository"
+    return plugin_dir, ""
+
+
+def _reset_plugin_repo(plugin_dir, clean=False):
+    code, branch, _ = _run_git(plugin_dir, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = branch if code == 0 else "HEAD"
+
+    target = "HEAD"
+    outputs = []
+
+    if branch != "HEAD":
+        code, stdout, stderr = _run_git(plugin_dir, "fetch", "origin", timeout=60)
+        if code != 0:
+            return code, stdout, stderr
+        if stdout:
+            outputs.append(stdout)
+
+        code, _, _ = _run_git(plugin_dir, "rev-parse", "--verify", f"origin/{branch}")
+        if code != 0:
+            return code, "", f"Remote branch origin/{branch} not found"
+        target = f"origin/{branch}"
+
+    code, stdout, stderr = _run_git(plugin_dir, "reset", "--hard", target, timeout=60)
+    if code != 0:
+        return code, stdout, stderr
+    if stdout:
+        outputs.append(stdout)
+
+    if clean:
+        code, stdout, stderr = _run_git(plugin_dir, "clean", "-fdx", timeout=60)
+        if code != 0:
+            return code, "\n".join(outputs + ([stdout] if stdout else [])), stderr
+        if stdout:
+            outputs.append(stdout)
+
+    return 0, "\n".join(outputs).strip(), ""
+
+
 @routes.get("/extension_manager/plugins/list")
 async def plugins_list(request):
     check_update = request.rel_url.query.get("check_update", "0") == "1"
@@ -140,6 +187,31 @@ async def plugin_update_all(request):
     tasks = [pull_one(e.path) for e in entries]
     results = [r for r in await asyncio.gather(*tasks) if r is not None]
     return web.json_response({"status": "success", "results": results})
+
+
+@routes.post("/extension_manager/plugins/repair")
+async def plugin_repair(request):
+    try:
+        data = await request.json()
+        name = data.get("name", "")
+        clean = bool(data.get("clean", False))
+        if not name:
+            return web.json_response({"status": "error", "msg": "Missing name"}, status=400)
+
+        plugin_dir, error = _get_git_plugin_dir(name)
+        if error:
+            status = 403 if error == "Invalid path" else 404
+            return web.json_response({"status": "error", "msg": error}, status=status)
+
+        loop = asyncio.get_event_loop()
+        code, stdout, stderr = await loop.run_in_executor(
+            None, lambda: _reset_plugin_repo(plugin_dir, clean=clean)
+        )
+        if code != 0:
+            return web.json_response({"status": "error", "msg": stderr or stdout}, status=500)
+        return web.json_response({"status": "success", "output": stdout})
+    except Exception as e:
+        return web.json_response({"status": "error", "msg": str(e)}, status=500)
 
 
 @routes.get("/extension_manager/plugins/commits")
