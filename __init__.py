@@ -361,6 +361,100 @@ async def plugin_uninstall(request):
         return web.json_response({"status": "error", "msg": str(e)}, status=500)
 
 
+def _normalize_remote(s):
+    return (s or "").strip().lower().rstrip("/")
+
+
+def _install_one_from_manifest(nodes_dir, item, pin):
+    """处理单条清单项 → 返回 {name, status, msg} 结果。
+    status: installed | skipped_existing | skipped_conflict | error
+    """
+    name    = (item.get("name") or "").strip()
+    remote  = (item.get("remote") or "").strip()
+    commit  = (item.get("commit") or "").strip()
+    enabled = bool(item.get("enabled", True))
+
+    if not name or not remote:
+        return {"name": name or "?", "status": "error", "msg": "Missing name or remote"}
+
+    # 路径安全：禁止分隔符与父级引用
+    if any(ch in name for ch in ["/", "\\", ".."]):
+        return {"name": name, "status": "error", "msg": "Invalid plugin name"}
+
+    target_dir   = os.path.join(nodes_dir, name)
+    disabled_dir = os.path.join(nodes_dir, name + ".disabled")
+
+    # 已存在检测（含 .disabled 变体）
+    existing_dir = target_dir if os.path.isdir(target_dir) else (
+        disabled_dir if os.path.isdir(disabled_dir) else None
+    )
+    if existing_dir is not None:
+        if not os.path.isdir(os.path.join(existing_dir, ".git")):
+            return {"name": name, "status": "skipped_conflict", "msg": "已存在同名目录但非 git 仓库"}
+        code, existing_remote, _ = _run_git(existing_dir, "remote", "get-url", "origin")
+        if code != 0:
+            return {"name": name, "status": "skipped_conflict", "msg": "已存在但无法读取 remote"}
+        if _normalize_remote(existing_remote) != _normalize_remote(remote):
+            return {"name": name, "status": "skipped_conflict",
+                    "msg": f"已存在但 remote 不同: {existing_remote}"}
+        return {"name": name, "status": "skipped_existing", "msg": "已存在"}
+
+    # Clone：pin 需要完整历史，否则 shallow 加速
+    if pin and commit:
+        code, stdout, stderr = _run_git(
+            nodes_dir, "clone", "--recursive", remote, name, timeout=180
+        )
+    else:
+        code, stdout, stderr = _run_git(
+            nodes_dir, "clone", "--depth=1", "--recursive", remote, name, timeout=120
+        )
+    if code != 0:
+        return {"name": name, "status": "error",
+                "msg": (stderr or stdout or "clone failed")[:300]}
+
+    # 可选：锁定到记录 commit
+    if pin and commit:
+        code, _, stderr = _run_git(target_dir, "checkout", commit, timeout=30)
+        if code != 0:
+            return {"name": name, "status": "error",
+                    "msg": f"clone 成功但 checkout 失败: {stderr[:200]}"}
+
+    # 应用启用/禁用状态
+    if not enabled:
+        try:
+            os.rename(target_dir, disabled_dir)
+        except Exception as e:
+            return {"name": name, "status": "error", "msg": f"clone 成功但禁用失败: {e}"}
+        return {"name": name, "status": "installed", "msg": "已安装（禁用）"}
+
+    return {"name": name, "status": "installed", "msg": "已安装"}
+
+
+@routes.post("/extension_manager/plugins/install_batch")
+async def plugin_install_batch(request):
+    try:
+        data    = await request.json()
+        plugins = data.get("plugins", [])
+        pin     = bool(data.get("pin", False))
+        if not isinstance(plugins, list) or not plugins:
+            return web.json_response({"status": "error", "msg": "Empty plugins list"}, status=400)
+
+        nodes_dir = _get_custom_nodes_dir()
+        loop = asyncio.get_event_loop()
+
+        # 顺序处理：clone 串行更稳，避免 GitHub 限流、便于阅读报告
+        results = []
+        for item in plugins:
+            r = await loop.run_in_executor(
+                None, lambda it=item: _install_one_from_manifest(nodes_dir, it, pin)
+            )
+            results.append(r)
+
+        return web.json_response({"status": "success", "results": results})
+    except Exception as e:
+        return web.json_response({"status": "error", "msg": str(e)}, status=500)
+
+
 NODE_CLASS_MAPPINGS = {}
 WEB_DIRECTORY = "./web"
 __all__ = ["NODE_CLASS_MAPPINGS", "WEB_DIRECTORY"]

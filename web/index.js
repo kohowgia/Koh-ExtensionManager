@@ -397,6 +397,8 @@ app.registerExtension({
                         <button class="em-btn" id="em-plugin-refresh">刷新列表</button>
                         <button class="em-btn" id="em-plugin-check">检查更新</button>
                         <button class="em-btn" id="em-plugin-update-all">一键更新</button>
+                        <button class="em-btn" id="em-plugin-export">导出清单</button>
+                        <button class="em-btn" id="em-plugin-import">导入清单</button>
                     </div>
                     <div style="font-size:11px;color:#777;padding:2px 2px 0;">
                         提示：启用/禁用、安装、卸载、切换版本后均需重启 ComfyUI 才能生效
@@ -459,6 +461,9 @@ app.registerExtension({
             const scrollWrap   = container.querySelector(".em-plugin-scroll");
 
             _setupResizableTable(headerWrap, scrollWrap, "em_plugin_col_widths");
+
+            // 缓存最近一次加载的列表，供导出清单复用
+            let _lastPluginList = [];
 
             function statusBadge(p) {
                 if (!p.is_git)              return `<span class="em-plugin-badge em-badge-gray">非git</span>`;
@@ -639,6 +644,7 @@ app.registerExtension({
                 try {
                     const res = await fetch(`/extension_manager/plugins/list?check_update=${checkUpdate ? "1" : "0"}`);
                     const plugins = await res.json();
+                    _lastPluginList = plugins;
                     renderTable(plugins);
                 } catch (e) {
                     tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:#f66;">加载失败: ${e}</td></tr>`;
@@ -649,9 +655,150 @@ app.registerExtension({
 
             const urlInput   = container.querySelector("#em-plugin-url");
             const btnInstall = container.querySelector("#em-plugin-install");
+            const btnExport  = container.querySelector("#em-plugin-export");
+            const btnImport  = container.querySelector("#em-plugin-import");
+
+            // ============ 导出/导入清单（插件同步） ============
+            function _confirmImportDialog(count) {
+                return new Promise((resolve) => {
+                    const overlay = document.createElement("div");
+                    overlay.style.cssText = [
+                        "position:fixed;inset:0;z-index:10001;",
+                        "background:rgba(0,0,0,0.72);",
+                        "display:flex;align-items:center;justify-content:center;"
+                    ].join("");
+                    const dialog = document.createElement("div");
+                    dialog.style.cssText = [
+                        "background:var(--comfy-menu-bg,#1e1e1e);",
+                        "border:1px solid #333;border-radius:8px;",
+                        "padding:18px 20px;min-width:380px;color:#ddd;",
+                        "box-shadow:0 8px 40px rgba(0,0,0,0.6);"
+                    ].join("");
+                    dialog.innerHTML = `
+                        <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:#ddd;">确认导入清单</div>
+                        <div style="font-size:12px;color:#bbb;margin-bottom:14px;line-height:1.5;">
+                            将根据清单批量安装 <b style="color:#ddd;">${count}</b> 个插件。<br>
+                            已存在的插件会被跳过（不覆盖、不更新）。
+                        </div>
+                        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#ccc;cursor:pointer;margin-bottom:18px;user-select:none;">
+                            <input type="checkbox" id="em-import-pin" style="cursor:pointer;margin:0;">
+                            锁定到清单记录的版本（commit）
+                        </label>
+                        <div style="display:flex;gap:8px;justify-content:flex-end;">
+                            <button class="em-btn" id="em-import-cancel" style="flex:none;padding:0 16px;height:30px;">取消</button>
+                            <button class="em-btn" id="em-import-ok" style="flex:none;padding:0 16px;height:30px;">开始安装</button>
+                        </div>
+                    `;
+                    overlay.appendChild(dialog);
+                    document.body.appendChild(overlay);
+                    const cleanup = () => document.body.removeChild(overlay);
+                    dialog.querySelector("#em-import-cancel").onclick = () => { cleanup(); resolve(null); };
+                    dialog.querySelector("#em-import-ok").onclick = () => {
+                        const pin = dialog.querySelector("#em-import-pin").checked;
+                        cleanup();
+                        resolve({ pin });
+                    };
+                    overlay.addEventListener("click", (e) => {
+                        if (e.target === overlay) { cleanup(); resolve(null); }
+                    });
+                });
+            }
+
+            function exportManifest() {
+                if (!_lastPluginList || _lastPluginList.length === 0) {
+                    alert("请先加载插件列表");
+                    return;
+                }
+                // 只导出有 remote 的 git 插件（非 git 插件无法 clone 同步）
+                const items = _lastPluginList
+                    .filter(p => p.is_git && p.remote)
+                    .map(p => ({
+                        name:    p.display_name || p.name,
+                        remote:  p.remote,
+                        branch:  p.branch || "main",
+                        commit:  p.commit || "",
+                        enabled: !!p.enabled,
+                    }));
+                if (items.length === 0) {
+                    alert("当前没有可导出的 git 插件");
+                    return;
+                }
+                const manifest = {
+                    exported_at: new Date().toISOString().slice(0, 19).replace("T", " "),
+                    source: "ComfyUI-Plugins",
+                    plugins: items,
+                };
+                const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" });
+                const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+                const a = document.createElement("a");
+                a.href = URL.createObjectURL(blob);
+                a.download = `comfyui-plugins-${ts}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(a.href);
+            }
+
+            async function importManifest() {
+                const input = document.createElement("input");
+                input.type = "file";
+                input.accept = "application/json,.json";
+                input.onchange = async () => {
+                    const file = input.files && input.files[0];
+                    if (!file) return;
+                    let manifest;
+                    try {
+                        const text = await file.text();
+                        manifest   = JSON.parse(text);
+                    } catch (e) {
+                        alert("清单文件解析失败: " + e);
+                        return;
+                    }
+                    if (!manifest || !Array.isArray(manifest.plugins) || manifest.plugins.length === 0) {
+                        alert("清单为空或格式错误");
+                        return;
+                    }
+                    const choice = await _confirmImportDialog(manifest.plugins.length);
+                    if (!choice) return;
+
+                    btnImport.disabled = true;
+                    btnImport.textContent = "安装中…";
+                    try {
+                        const res  = await fetch("/extension_manager/plugins/install_batch", {
+                            method:  "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body:    JSON.stringify({ plugins: manifest.plugins, pin: choice.pin }),
+                        });
+                        const json = await res.json();
+                        if (json.status !== "success") {
+                            alert("导入失败: " + (json.msg || "未知错误"));
+                            return;
+                        }
+                        const sign = {
+                            installed:        "✓",
+                            skipped_existing: "→",
+                            skipped_conflict: "⚠",
+                            error:            "✗",
+                        };
+                        const lines = (json.results || []).map(r =>
+                            `${sign[r.status] || "?"} ${r.name}: ${r.msg || r.status}`
+                        );
+                        alert(`导入完成（${lines.length} 项）:\n\n${lines.join("\n")}\n\n重启 ComfyUI 后生效`);
+                        loadPlugins(false);
+                    } catch (e) {
+                        alert("请求失败: " + e);
+                    } finally {
+                        btnImport.disabled = false;
+                        btnImport.textContent = "导入清单";
+                    }
+                };
+                input.click();
+            }
 
             btnRefresh.onclick   = () => loadPlugins(false);
             btnCheck.onclick     = () => loadPlugins(true);
+            btnExport.onclick    = exportManifest;
+            btnImport.onclick    = importManifest;
             btnUpdateAll.onclick = async () => {
                 if (!confirm("确认更新所有插件？")) return;
                 btnUpdateAll.disabled = true;
