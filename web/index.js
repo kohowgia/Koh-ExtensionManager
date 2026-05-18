@@ -699,7 +699,7 @@ app.registerExtension({
                     <div class="em-toolbar">
                         <div class="em-tb-group em-tb-search">
                             <input type="text" class="em-search-input" id="em-search-input"
-                                   placeholder="🔍 搜索插件名 / 远端地址..."/>
+                                   placeholder="搜索插件名 / 远端地址..."/>
                         </div>
                         <div class="em-tb-divider"></div>
                         <div class="em-tb-group">
@@ -713,6 +713,9 @@ app.registerExtension({
                         <div class="em-tb-divider"></div>
                         <div class="em-tb-group">
                             <button class="em-btn em-btn-sm em-btn-primary" id="em-plugin-install-btn">安装</button>
+                        </div>
+                        <div class="em-tb-divider"></div>
+                        <div class="em-tb-group">
                             <button class="em-btn em-btn-sm" id="em-plugin-export" title="将当前所有插件导出为 JSON 清单文件，用于跨机器同步">导出</button>
                             <button class="em-btn em-btn-sm" id="em-plugin-import" title="从 JSON 清单文件批量安装插件">导入</button>
                         </div>
