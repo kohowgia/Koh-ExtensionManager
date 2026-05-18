@@ -33,6 +33,7 @@ app.registerExtension({
             style.textContent = `
                 /* ===== KohowGia ExtensionManager ===== */
 
+                /* —— 表头/表体 —— */
                 .em-plugin-thead-wrap {
                     flex-shrink: 0; overflow: hidden;
                     background: #1a1a1a;
@@ -70,6 +71,13 @@ app.registerExtension({
                 .em-plugin-remote { color: #666; overflow: hidden; text-overflow: ellipsis; }
                 .em-plugin-commit { font-family: monospace; color: #888; font-size: 11px; }
                 .em-plugin-actions { display: flex; gap: 4px; align-items: center; }
+                .em-pending-dot {
+                    display: inline-block; width: 6px; height: 6px;
+                    background: #dc6; border-radius: 50%; margin-left: 6px;
+                    vertical-align: middle;
+                }
+
+                /* —— 按钮 —— */
                 .em-plugin-btn {
                     flex: 0 !important; padding: 0 7px !important; height: 24px !important;
                     font-size: 11px !important; white-space: nowrap;
@@ -85,6 +93,27 @@ app.registerExtension({
                 .em-btn:disabled { opacity: 0.45; cursor: not-allowed; }
                 .em-btn-danger { background: #4a1a1a !important; border-color: #6a2a2a !important; }
                 .em-btn-danger:hover { background: #5a2020 !important; border-color: #884040 !important; }
+                .em-btn-sm {
+                    flex: none !important; height: 28px !important;
+                    padding: 0 10px !important; font-size: 11px !important;
+                }
+                .em-btn-primary {
+                    background: #1f4a6b !important; border-color: #2f6a8b !important;
+                }
+                .em-btn-primary:hover {
+                    background: #2a5f88 !important; border-color: #3f7a9b !important;
+                }
+                .em-btn-warn {
+                    background: #5a4800 !important; border-color: #7a6800 !important; color: #fff !important;
+                    flex: none !important; height: 26px !important;
+                    padding: 0 14px !important; font-size: 11px !important;
+                    border-radius: 5px; cursor: pointer; transition: 0.15s;
+                    display: flex; justify-content: center; align-items: center;
+                    font-family: inherit; box-sizing: border-box;
+                }
+                .em-btn-warn:hover { background: #7a6800 !important; }
+
+                /* —— Badge —— */
                 .em-plugin-badge {
                     display: inline-block; padding: 1px 6px; border-radius: 3px;
                     font-size: 11px; font-weight: 500;
@@ -93,13 +122,287 @@ app.registerExtension({
                 .em-badge-yellow { background: #3a2e00; color: #cc6; border: 1px solid #5a4800; }
                 .em-badge-gray   { background: #2a2a2a; color: #777; border: 1px solid #3a3a3a; }
 
+                /* —— 工具栏 —— */
                 .em-header {
-                    flex-shrink: 0; padding: 8px; border-bottom: 1px solid #2a2a2a;
+                    flex-shrink: 0; padding: 8px 10px;
+                    border-bottom: 1px solid #2a2a2a;
                     display: flex; flex-direction: column; gap: 6px;
                 }
-                .em-toolbar { display: flex; gap: 4px; align-items: center; }
+                .em-toolbar {
+                    display: flex; gap: 8px; align-items: center;
+                }
+                .em-tb-group {
+                    display: flex; gap: 4px; align-items: center;
+                }
+                .em-tb-search { flex: 1; min-width: 180px; }
+                .em-tb-divider {
+                    width: 1px; height: 18px;
+                    background: #3a3a3a; flex-shrink: 0;
+                }
+                .em-search-input {
+                    width: 100%; height: 28px; padding: 0 10px;
+                    background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 4px;
+                    color: #ccc; font-size: 12px; font-family: inherit; outline: none;
+                    box-sizing: border-box;
+                }
+                .em-search-input:focus { border-color: #4a4a4a; }
+
+                /* —— 待重启黄条 —— */
+                .em-pending-bar {
+                    flex-shrink: 0; padding: 7px 12px;
+                    background: #3a2e00; border-bottom: 1px solid #5a4800;
+                    color: #dc6; font-size: 12px;
+                    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+                }
+                .em-pending-text b { color: #fc8; font-weight: 700; padding: 0 2px; }
+
+                /* —— Toast —— */
+                .em-toast-container {
+                    position: fixed; top: 60px; right: 16px; z-index: 10100;
+                    display: flex; flex-direction: column; gap: 8px;
+                    pointer-events: none;
+                }
+                .em-toast {
+                    min-width: 260px; max-width: 420px; padding: 10px 14px;
+                    color: #ddd; border-radius: 6px;
+                    font-size: 12px; line-height: 1.5;
+                    display: flex; align-items: flex-start; gap: 10px;
+                    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+                    pointer-events: auto; cursor: pointer;
+                    opacity: 0; transform: translateX(20px);
+                    transition: opacity 0.2s, transform 0.2s;
+                }
+                .em-toast.em-toast-in { opacity: 1; transform: translateX(0); }
+                .em-toast-success { background: #1a3a1a; border: 1px solid #2a5a2a; }
+                .em-toast-error   { background: #3a1a1a; border: 1px solid #5a2a2a; }
+                .em-toast-warning { background: #3a2e00; border: 1px solid #5a4800; }
+                .em-toast-info    { background: #1a2a3a; border: 1px solid #2a4060; }
+                .em-toast-icon {
+                    flex-shrink: 0; font-weight: 600; font-size: 13px;
+                }
+                .em-toast-success .em-toast-icon { color: #8c8; }
+                .em-toast-error   .em-toast-icon { color: #f88; }
+                .em-toast-warning .em-toast-icon { color: #dc6; }
+                .em-toast-info    .em-toast-icon { color: #8af; }
+                .em-toast-msg {
+                    flex: 1; white-space: pre-wrap; word-break: break-word;
+                }
+
+                /* —— 上下文菜单 —— */
+                .em-ctx-menu {
+                    position: fixed; z-index: 10200;
+                    background: #252525; border: 1px solid #3a3a3a; border-radius: 5px;
+                    box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+                    padding: 4px; min-width: 140px; font-size: 12px; color: #ccc;
+                }
+                .em-ctx-item {
+                    padding: 6px 10px; cursor: pointer; border-radius: 3px;
+                    white-space: nowrap; user-select: none;
+                }
+                .em-ctx-item:hover { background: #333; }
+                .em-ctx-item.em-ctx-danger { color: #f88; }
+                .em-ctx-item.em-ctx-danger:hover { background: #3a1a1a; }
+                .em-ctx-divider {
+                    height: 1px; background: #3a3a3a; margin: 4px 0;
+                }
+
+                /* —— 通用 Dialog —— */
+                .em-dialog-overlay {
+                    position: fixed; inset: 0; z-index: 10050;
+                    background: rgba(0,0,0,0.7);
+                    display: flex; align-items: center; justify-content: center;
+                }
+                .em-dialog {
+                    background: var(--comfy-menu-bg, #1e1e1e);
+                    border: 1px solid #333; border-radius: 8px;
+                    padding: 18px 22px; min-width: 340px; max-width: 600px; color: #ddd;
+                    box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+                }
+                .em-dialog-title {
+                    font-size: 13px; font-weight: 600;
+                    margin-bottom: 12px; color: #ddd;
+                }
+                .em-dialog-content {
+                    font-size: 12px; color: #bbb;
+                    margin-bottom: 18px; line-height: 1.6;
+                }
+                .em-dialog-content input[type="text"],
+                .em-dialog-content textarea {
+                    width: 100%; padding: 0 10px; height: 32px;
+                    background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 5px;
+                    color: #ccc; font-size: 12px; font-family: inherit; outline: none;
+                    box-sizing: border-box;
+                }
+                .em-dialog-content input[type="text"]:focus { border-color: #4a4a4a; }
+                .em-dialog-actions {
+                    display: flex; gap: 8px; justify-content: flex-end;
+                }
+                .em-dialog-actions .em-btn {
+                    flex: none !important; padding: 0 16px !important; height: 30px !important;
+                }
             `;
             document.head.appendChild(style);
+        }
+
+        // ================= 通用工具：HTML 转义 =================
+        function _escapeHtml(s) {
+            return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+                "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+            }[c]));
+        }
+
+        // ================= Toast 系统 =================
+        let _toastContainer = null;
+        function _getToastContainer() {
+            if (!_toastContainer || !document.body.contains(_toastContainer)) {
+                _toastContainer = document.createElement("div");
+                _toastContainer.className = "em-toast-container";
+                document.body.appendChild(_toastContainer);
+            }
+            return _toastContainer;
+        }
+        const _toastIcons = { success: "✓", error: "✗", warning: "⚠", info: "ℹ" };
+        function showToast({ type = "info", msg = "", duration = 4000 } = {}) {
+            const container = _getToastContainer();
+            const toast = document.createElement("div");
+            toast.className = `em-toast em-toast-${type}`;
+            const icon = _toastIcons[type] || _toastIcons.info;
+            toast.innerHTML = `<span class="em-toast-icon"></span><span class="em-toast-msg"></span>`;
+            toast.querySelector(".em-toast-icon").textContent = icon;
+            toast.querySelector(".em-toast-msg").textContent  = String(msg || "");
+            container.appendChild(toast);
+            requestAnimationFrame(() => toast.classList.add("em-toast-in"));
+            let dismissed = false;
+            const dismiss = () => {
+                if (dismissed) return;
+                dismissed = true;
+                toast.classList.remove("em-toast-in");
+                setTimeout(() => toast.remove(), 220);
+            };
+            toast.onclick = dismiss;
+            if (duration > 0) setTimeout(dismiss, duration);
+            return { dismiss };
+        }
+
+        // ================= 通用 Dialog =================
+        function showCustomDialog({ title = "", contentHTML = "", buttons = [], onMount = null } = {}) {
+            return new Promise((resolve) => {
+                const overlay = document.createElement("div");
+                overlay.className = "em-dialog-overlay";
+                const dialog = document.createElement("div");
+                dialog.className = "em-dialog";
+                const titleEl = document.createElement("div");
+                titleEl.className = "em-dialog-title";
+                titleEl.textContent = title;
+                const contentEl = document.createElement("div");
+                contentEl.className = "em-dialog-content";
+                contentEl.innerHTML = contentHTML;
+                const actionsEl = document.createElement("div");
+                actionsEl.className = "em-dialog-actions";
+
+                dialog.appendChild(titleEl);
+                dialog.appendChild(contentEl);
+                dialog.appendChild(actionsEl);
+                overlay.appendChild(dialog);
+                document.body.appendChild(overlay);
+
+                let resolved = false;
+                const cleanup = (value) => {
+                    if (resolved) return;
+                    resolved = true;
+                    document.removeEventListener("keydown", onKey);
+                    overlay.remove();
+                    resolve(value);
+                };
+
+                for (const b of buttons) {
+                    const btn = document.createElement("button");
+                    btn.className = "em-btn"
+                        + (b.danger  ? " em-btn-danger"  : "")
+                        + (b.primary ? " em-btn-primary" : "");
+                    btn.textContent = b.label;
+                    btn.onclick = () => {
+                        const v = (typeof b.value === "function") ? b.value(contentEl, dialog) : b.value;
+                        cleanup(v);
+                    };
+                    actionsEl.appendChild(btn);
+                }
+
+                overlay.addEventListener("click", (e) => {
+                    if (e.target === overlay) cleanup(null);
+                });
+                const onKey = (e) => { if (e.key === "Escape") cleanup(null); };
+                document.addEventListener("keydown", onKey);
+
+                if (typeof onMount === "function") onMount(contentEl, dialog);
+                const firstInput = contentEl.querySelector("input,textarea,select");
+                if (firstInput) requestAnimationFrame(() => firstInput.focus());
+            });
+        }
+
+        async function showConfirm({ title = "确认", message = "", hint = "", okText = "确定", cancelText = "取消", danger = false } = {}) {
+            const html = `
+                <div style="white-space:pre-wrap;line-height:1.6;">${_escapeHtml(message)}</div>
+                ${hint ? `<div style="margin-top:10px;font-size:11px;color:#888;line-height:1.5;">${_escapeHtml(hint)}</div>` : ""}
+            `;
+            const v = await showCustomDialog({
+                title,
+                contentHTML: html,
+                buttons: [
+                    { label: cancelText, value: false },
+                    { label: okText, value: true, danger, primary: !danger },
+                ]
+            });
+            return v === true;
+        }
+
+        // ================= Context Menu =================
+        function showContextMenu(event, items) {
+            if (event && event.preventDefault) event.preventDefault();
+            document.querySelectorAll(".em-ctx-menu").forEach(el => el.remove());
+
+            const menu = document.createElement("div");
+            menu.className = "em-ctx-menu";
+            for (const item of items) {
+                if (item.divider) {
+                    const sep = document.createElement("div");
+                    sep.className = "em-ctx-divider";
+                    menu.appendChild(sep);
+                    continue;
+                }
+                const it = document.createElement("div");
+                it.className = "em-ctx-item" + (item.danger ? " em-ctx-danger" : "");
+                it.textContent = item.label;
+                it.onclick = (e) => {
+                    e.stopPropagation();
+                    cleanup();
+                    if (item.action) item.action();
+                };
+                menu.appendChild(it);
+            }
+            document.body.appendChild(menu);
+
+            const rect = menu.getBoundingClientRect();
+            let x = event.clientX, y = event.clientY;
+            if (x + rect.width  > window.innerWidth)  x = window.innerWidth  - rect.width  - 8;
+            if (y + rect.height > window.innerHeight) y = window.innerHeight - rect.height - 8;
+            if (x < 4) x = 4;
+            if (y < 4) y = 4;
+            menu.style.left = x + "px";
+            menu.style.top  = y + "px";
+
+            const onKey = (e) => { if (e.key === "Escape") cleanup(); };
+            const cleanup = () => {
+                menu.remove();
+                document.removeEventListener("click", cleanup);
+                document.removeEventListener("contextmenu", cleanup);
+                document.removeEventListener("keydown", onKey);
+            };
+            requestAnimationFrame(() => {
+                document.addEventListener("click", cleanup);
+                document.addEventListener("contextmenu", cleanup);
+                document.addEventListener("keydown", onKey);
+            });
         }
 
         // ================= 列宽拖拽（双表版）=================
@@ -347,10 +650,10 @@ app.registerExtension({
                     const tr = document.createElement("tr");
                     if (isCurrent) tr.style.background = "#1a2a1a";
                     tr.innerHTML = `
-                        <td class="em-plugin-commit">${c.short}</td>
+                        <td class="em-plugin-commit">${_escapeHtml(c.short)}</td>
                         <td style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#ccc;"
-                            title="${c.message.replace(/"/g, "&quot;")}">${c.message}</td>
-                        <td style="color:#888;font-size:11px;white-space:nowrap;">${c.date}</td>
+                            title="${_escapeHtml(c.message)}">${_escapeHtml(c.message)}</td>
+                        <td style="color:#888;font-size:11px;white-space:nowrap;">${_escapeHtml(c.date)}</td>
                         <td style="text-align:center;">${isCurrent ? '<span style="color:#6c6;font-size:15px;">✓</span>' : ''}</td>
                         <td></td>
                     `;
@@ -369,14 +672,14 @@ app.registerExtension({
                                 const j = await r.json();
                                 if (j.status === "success") {
                                     overlay.style.display = "none";
-                                    alert(`已切换到 ${c.short}，重启 ComfyUI 后生效`);
-                                    if (onSwitch) onSwitch();
+                                    showToast({ type: "success", msg: `${pluginName} 已切换到 ${c.short}` });
+                                    if (onSwitch) onSwitch(pluginName);
                                 } else {
-                                    alert(`切换失败: ${j.msg}`);
+                                    showToast({ type: "error", msg: `切换失败: ${j.msg}` });
                                     btn.disabled = false; btn.textContent = "切换";
                                 }
                             } catch (e) {
-                                alert("请求失败: " + e);
+                                showToast({ type: "error", msg: "请求失败: " + e });
                                 btn.disabled = false; btn.textContent = "切换";
                             }
                         };
@@ -385,7 +688,7 @@ app.registerExtension({
                     tbody.appendChild(tr);
                 }
             } catch (e) {
-                tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#f66;">加载失败: ${e}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#f66;">加载失败: ${_escapeHtml(String(e))}</td></tr>`;
             }
         }
 
@@ -394,27 +697,42 @@ app.registerExtension({
             container.innerHTML = `
                 <div class="em-header">
                     <div class="em-toolbar">
-                        <button class="em-btn" id="em-plugin-refresh">刷新列表</button>
-                        <button class="em-btn" id="em-plugin-check">检查更新</button>
-                        <button class="em-btn" id="em-plugin-update-all">一键更新</button>
-                        <button class="em-btn" id="em-plugin-export">导出清单</button>
-                        <button class="em-btn" id="em-plugin-import">导入清单</button>
+                        <div class="em-tb-group em-tb-search">
+                            <input type="text" class="em-search-input" id="em-search-input"
+                                   placeholder="🔍 搜索插件名 / 远端地址..."/>
+                        </div>
+                        <div class="em-tb-divider"></div>
+                        <div class="em-tb-group">
+                            <button class="em-btn em-btn-sm" id="em-plugin-refresh">刷新</button>
+                            <button class="em-btn em-btn-sm" id="em-plugin-check">检查更新</button>
+                        </div>
+                        <div class="em-tb-divider"></div>
+                        <div class="em-tb-group">
+                            <button class="em-btn em-btn-sm" id="em-plugin-update-all">一键更新</button>
+                        </div>
+                        <div class="em-tb-divider"></div>
+                        <div class="em-tb-group">
+                            <button class="em-btn em-btn-sm em-btn-primary" id="em-plugin-install-btn">安装</button>
+                            <button class="em-btn em-btn-sm" id="em-plugin-export" title="将当前所有插件导出为 JSON 清单文件，用于跨机器同步">导出</button>
+                            <button class="em-btn em-btn-sm" id="em-plugin-import" title="从 JSON 清单文件批量安装插件">导入</button>
+                        </div>
                     </div>
-                    <div style="font-size:11px;color:#777;padding:2px 2px 0;">
-                        提示：启用/禁用、安装、卸载、切换版本后均需重启 ComfyUI 才能生效
-                    </div>
+                </div>
+                <div class="em-pending-bar" id="em-pending-bar" style="display:none;">
+                    <span class="em-pending-text">⚠ <b id="em-pending-count">0</b> 项改动等待重启生效</span>
+                    <button class="em-btn-warn" id="em-pending-reboot">立即重启</button>
                 </div>
                 <div class="em-plugin-thead-wrap">
                     <table class="em-plugin-table" id="em-plugin-thead-table">
                         <colgroup>
                             <col style="width:40px;">
-                            <col style="width:220px;">
+                            <col style="width:240px;">
                             <col style="width:320px;">
                             <col style="width:80px;">
                             <col style="width:80px;">
                             <col style="width:140px;">
                             <col style="width:90px;">
-                            <col style="width:360px;">
+                            <col style="width:140px;">
                         </colgroup>
                         <thead>
                             <tr>
@@ -434,37 +752,80 @@ app.registerExtension({
                     <table class="em-plugin-table" id="em-plugin-tbody-table">
                         <colgroup>
                             <col style="width:40px;">
-                            <col style="width:220px;">
+                            <col style="width:240px;">
                             <col style="width:320px;">
                             <col style="width:80px;">
                             <col style="width:80px;">
                             <col style="width:140px;">
                             <col style="width:90px;">
-                            <col style="width:360px;">
+                            <col style="width:140px;">
                         </colgroup>
                         <tbody id="em-plugin-tbody"></tbody>
                     </table>
                 </div>
-                <div style="flex-shrink:0;padding:8px 10px;border-top:1px solid #2a2a2a;display:flex;gap:6px;align-items:center;">
-                    <input id="em-plugin-url" type="text" placeholder="粘贴 Git URL 安装插件…"
-                        style="flex:1;height:30px;padding:0 10px;background:#1e1e1e;border:1px solid #3a3a3a;
-                               border-radius:5px;color:#ccc;font-size:12px;font-family:inherit;box-sizing:border-box;outline:none;"/>
-                    <button class="em-btn" id="em-plugin-install" style="flex:none;padding:0 18px;height:30px;">安装</button>
-                </div>
             `;
 
-            const tbody        = container.querySelector("#em-plugin-tbody");
-            const btnRefresh   = container.querySelector("#em-plugin-refresh");
-            const btnCheck     = container.querySelector("#em-plugin-check");
-            const btnUpdateAll = container.querySelector("#em-plugin-update-all");
-            const headerWrap   = container.querySelector(".em-plugin-thead-wrap");
-            const scrollWrap   = container.querySelector(".em-plugin-scroll");
+            const tbody         = container.querySelector("#em-plugin-tbody");
+            const btnRefresh    = container.querySelector("#em-plugin-refresh");
+            const btnCheck      = container.querySelector("#em-plugin-check");
+            const btnUpdateAll  = container.querySelector("#em-plugin-update-all");
+            const btnInstallBtn = container.querySelector("#em-plugin-install-btn");
+            const btnExport     = container.querySelector("#em-plugin-export");
+            const btnImport     = container.querySelector("#em-plugin-import");
+            const btnReboot     = container.querySelector("#em-pending-reboot");
+            const searchInput   = container.querySelector("#em-search-input");
+            const headerWrap    = container.querySelector(".em-plugin-thead-wrap");
+            const scrollWrap    = container.querySelector(".em-plugin-scroll");
+            const pendingBar    = container.querySelector("#em-pending-bar");
+            const pendingCount  = container.querySelector("#em-pending-count");
 
             _setupResizableTable(headerWrap, scrollWrap, "em_plugin_col_widths");
 
-            // 缓存最近一次加载的列表，供导出清单复用
+            // —— 面板内部状态 ——
             let _lastPluginList = [];
+            let _searchTerm = "";
+            const _pendingRestart = new Set();
 
+            // —— 待重启状态管理 ——
+            function markPendingRestart(name) {
+                if (!name) return;
+                _pendingRestart.add(name);
+                updatePendingBar();
+                // 重渲染当前列表以显示小圆点
+                renderTable(_lastPluginList);
+            }
+            function updatePendingBar() {
+                if (_pendingRestart.size === 0) {
+                    pendingBar.style.display = "none";
+                } else {
+                    pendingBar.style.display = "flex";
+                    pendingCount.textContent = String(_pendingRestart.size);
+                }
+            }
+
+            // —— 立即重启（绕开 ComfyUI-Manager 的 Restart/Stop 按钮状态机 bug）——
+            async function rebootComfyUI() {
+                const ok = await showConfirm({
+                    title: "立即重启 ComfyUI?",
+                    message: `${_pendingRestart.size} 项改动等待生效。`,
+                    hint: "请先保存未保存的工作流。重启过程约 10-30 秒。",
+                    okText: "重启",
+                    danger: true,
+                });
+                if (!ok) return;
+                showToast({
+                    type: "info",
+                    msg: "正在重启 ComfyUI...\n服务恢复后请刷新页面（Ctrl+Shift+R）。",
+                    duration: 10000,
+                });
+                try {
+                    await fetch("/manager/reboot", { method: "POST" });
+                } catch (_) {
+                    // 重启后连接断开是正常的
+                }
+            }
+
+            // —— 工具函数 ——
             function statusBadge(p) {
                 if (!p.is_git)              return `<span class="em-plugin-badge em-badge-gray">非git</span>`;
                 if (p.has_update)           return `<span class="em-plugin-badge em-badge-yellow">有更新</span>`;
@@ -472,16 +833,88 @@ app.registerExtension({
                 return `<span class="em-plugin-badge em-badge-gray">未检查</span>`;
             }
 
-            async function repairPlugin(p, clean, btn) {
-                const title = clean ? "重装" : "修复";
-                const message = clean
-                    ? `确认重装 "${p.name}"？\n\n这会恢复远端版本，并删除本地额外文件（包括 .gitignore 忽略的文件）。`
-                    : `确认修复 "${p.name}"？\n\n这会恢复缺失或被修改的仓库文件，但保留本地额外文件。`;
-                if (!confirm(message)) return;
+            // git pull "Already up to date." 兼容旧版 git "Already up-to-date."
+            const _NO_CHANGE_RE = /already up[ -]?to[ -]?date/i;
 
-                const oldText = btn.textContent;
+            // —— 单插件操作 ——
+            async function togglePlugin(p, chk) {
+                chk.disabled = true;
+                try {
+                    const res  = await fetch("/extension_manager/plugins/toggle", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({name: p.name})
+                    });
+                    const json = await res.json();
+                    if (json.status === "success") {
+                        markPendingRestart(p.display_name || p.name);
+                        showToast({
+                            type: "success",
+                            msg: `${p.display_name || p.name} 已${chk.checked ? "启用" : "禁用"}`
+                        });
+                        loadPlugins(false);
+                    } else {
+                        showToast({ type: "error", msg: `操作失败: ${json.msg}` });
+                        chk.checked = !chk.checked;
+                        chk.disabled = false;
+                    }
+                } catch (e) {
+                    showToast({ type: "error", msg: "请求失败: " + e });
+                    chk.checked = !chk.checked;
+                    chk.disabled = false;
+                }
+            }
+
+            async function updatePlugin(p, btn) {
                 btn.disabled = true;
-                btn.textContent = title + "中";
+                const oldText = btn.textContent;
+                btn.textContent = "更新中…";
+                try {
+                    const res  = await fetch("/extension_manager/plugins/update", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({name: p.name})
+                    });
+                    const json = await res.json();
+                    if (json.status === "success") {
+                        const output = (json.output || "").trim();
+                        const noChange = !output || _NO_CHANGE_RE.test(output);
+                        if (noChange) {
+                            showToast({ type: "info", msg: `${p.display_name || p.name} 已是最新` });
+                        } else {
+                            markPendingRestart(p.display_name || p.name);
+                            showToast({ type: "success", msg: `${p.display_name || p.name} 已更新` });
+                        }
+                        loadPlugins(false);
+                    } else {
+                        showToast({ type: "error", msg: `更新失败: ${json.msg}` });
+                        btn.disabled = false;
+                        btn.textContent = oldText;
+                    }
+                } catch (e) {
+                    showToast({ type: "error", msg: "请求失败: " + e });
+                    btn.disabled = false;
+                    btn.textContent = oldText;
+                }
+            }
+
+            async function repairPlugin(p, clean) {
+                const title   = clean ? "确认重装?" : "确认修复?";
+                const message = clean
+                    ? `重装 "${p.display_name || p.name}" 将恢复到远端版本，并删除本地额外文件（包括 .gitignore 忽略的文件）。`
+                    : `修复 "${p.display_name || p.name}" 将恢复缺失或被修改的仓库文件，但保留本地额外文件。`;
+                const ok = await showConfirm({
+                    title, message,
+                    okText: clean ? "重装" : "修复",
+                    danger: clean,
+                });
+                if (!ok) return;
+
+                const inProgressToast = showToast({
+                    type: "info",
+                    msg: `正在${clean ? "重装" : "修复"} ${p.display_name || p.name}...`,
+                    duration: 0,
+                });
                 try {
                     const res = await fetch("/extension_manager/plugins/repair", {
                         method: "POST",
@@ -490,39 +923,86 @@ app.registerExtension({
                     });
                     const text = await res.text();
                     let json;
-                    try {
-                        json = JSON.parse(text);
-                    } catch (_) {
-                        throw new Error(text || `HTTP ${res.status}`);
-                    }
+                    try { json = JSON.parse(text); }
+                    catch (_) { throw new Error(text || `HTTP ${res.status}`); }
+
+                    inProgressToast.dismiss();
                     if (json.status === "success") {
-                        alert(`${p.name} ${title}完成:\n${json.output || "完成"}`);
+                        markPendingRestart(p.display_name || p.name);
+                        showToast({
+                            type: "success",
+                            msg: `${p.display_name || p.name} ${clean ? "重装" : "修复"}完成`
+                        });
                         loadPlugins(false);
                     } else {
-                        alert(`${title}失败: ${json.msg}`);
-                        btn.disabled = false;
-                        btn.textContent = oldText;
+                        showToast({ type: "error", msg: `${clean ? "重装" : "修复"}失败: ${json.msg}` });
                     }
                 } catch (e) {
-                    alert("请求失败: " + e);
-                    btn.disabled = false;
-                    btn.textContent = oldText;
+                    inProgressToast.dismiss();
+                    showToast({ type: "error", msg: "请求失败: " + e });
                 }
             }
 
+            async function uninstallPlugin(p) {
+                const ok = await showConfirm({
+                    title: `卸载 "${p.display_name || p.name}"?`,
+                    message: "此操作不可恢复。",
+                    hint: "插件目录将被删除，重启后生效。",
+                    okText: "卸载",
+                    danger: true,
+                });
+                if (!ok) return;
+                try {
+                    const res  = await fetch("/extension_manager/plugins/uninstall", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({name: p.name})
+                    });
+                    const json = await res.json();
+                    if (json.status === "success") {
+                        markPendingRestart(p.display_name || p.name);
+                        showToast({ type: "success", msg: `${p.display_name || p.name} 已卸载` });
+                        loadPlugins(false);
+                    } else {
+                        showToast({ type: "error", msg: `卸载失败: ${json.msg}` });
+                    }
+                } catch (e) {
+                    showToast({ type: "error", msg: "请求失败: " + e });
+                }
+            }
+
+            // —— 渲染列表 ——
             function renderTable(plugins) {
+                const term = _searchTerm;
+                const filtered = term
+                    ? plugins.filter(p => {
+                        const name = (p.display_name || p.name || "").toLowerCase();
+                        const remote = (p.remote || "").toLowerCase();
+                        return name.includes(term) || remote.includes(term);
+                    })
+                    : plugins;
+
                 tbody.innerHTML = "";
-                for (const p of plugins) {
+                if (filtered.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:#666;">${term ? "无匹配插件" : "暂无插件"}</td></tr>`;
+                    return;
+                }
+
+                for (const p of filtered) {
                     const tr = document.createElement("tr");
                     if (!p.enabled) tr.style.opacity = "0.5";
                     const displayName = p.display_name || p.name;
+                    const isPending = _pendingRestart.has(displayName);
+
                     tr.innerHTML = `
                         <td style="text-align:center;"></td>
-                        <td class="em-plugin-name" title="${p.name}">${displayName}</td>
-                        <td class="em-plugin-remote" title="${p.remote || ""}">${p.remote || "-"}</td>
-                        <td>${p.branch || "-"}</td>
-                        <td class="em-plugin-commit">${p.commit || "-"}</td>
-                        <td>${p.date ? p.date.slice(0, 16) : "-"}</td>
+                        <td class="em-plugin-name" title="${_escapeHtml(p.name)}">
+                            ${_escapeHtml(displayName)}${isPending ? '<span class="em-pending-dot" title="待重启生效"></span>' : ''}
+                        </td>
+                        <td class="em-plugin-remote" title="${_escapeHtml(p.remote || "")}">${_escapeHtml(p.remote || "-")}</td>
+                        <td>${_escapeHtml(p.branch || "-")}</td>
+                        <td class="em-plugin-commit">${_escapeHtml(p.commit || "-")}</td>
+                        <td>${p.date ? _escapeHtml(p.date.slice(0, 16)) : "-"}</td>
                         <td>${statusBadge(p)}</td>
                         <td class="em-plugin-actions"></td>
                     `;
@@ -532,107 +1012,53 @@ app.registerExtension({
                     chk.checked = !!p.enabled;
                     chk.title = p.enabled ? "点击禁用（重启生效）" : "点击启用（重启生效）";
                     chk.style.cursor = "pointer";
-                    chk.onchange = async () => {
-                        chk.disabled = true;
-                        try {
-                            const res  = await fetch("/extension_manager/plugins/toggle", {
-                                method: "POST",
-                                headers: {"Content-Type": "application/json"},
-                                body: JSON.stringify({name: p.name})
-                            });
-                            const json = await res.json();
-                            if (json.status === "success") {
-                                loadPlugins(false);
-                            } else {
-                                alert(`操作失败: ${json.msg}`);
-                                chk.checked = !chk.checked;
-                                chk.disabled = false;
-                            }
-                        } catch (e) {
-                            alert("请求失败: " + e);
-                            chk.checked = !chk.checked;
-                            chk.disabled = false;
-                        }
-                    };
+                    chk.onchange = () => togglePlugin(p, chk);
                     tr.querySelector("td:first-child").appendChild(chk);
 
                     const actions = tr.querySelector(".em-plugin-actions");
 
                     if (p.is_git) {
+                        // 主操作：更新
                         const btnUpdate = document.createElement("button");
                         btnUpdate.className = "em-btn em-plugin-btn";
                         btnUpdate.textContent = "更新";
-                        btnUpdate.onclick = async () => {
-                            btnUpdate.disabled = true;
-                            btnUpdate.textContent = "更新中…";
-                            try {
-                                const res  = await fetch("/extension_manager/plugins/update", {
-                                    method: "POST",
-                                    headers: {"Content-Type": "application/json"},
-                                    body: JSON.stringify({name: p.name})
-                                });
-                                const json = await res.json();
-                                if (json.status === "success") {
-                                    alert(`${p.name} 更新成功:\n${json.output || "Already up to date."}`);
-                                    loadPlugins(false);
-                                } else {
-                                    alert(`更新失败: ${json.msg}`);
-                                    btnUpdate.disabled = false;
-                                    btnUpdate.textContent = "更新";
-                                }
-                            } catch (e) {
-                                alert("请求失败: " + e);
-                                btnUpdate.disabled = false;
-                                btnUpdate.textContent = "更新";
-                            }
+                        btnUpdate.onclick = (e) => {
+                            e.stopPropagation();
+                            updatePlugin(p, btnUpdate);
                         };
 
-                        const btnVersion = document.createElement("button");
-                        btnVersion.className = "em-btn em-plugin-btn";
-                        btnVersion.textContent = "切换版本";
-                        btnVersion.onclick = () => openVersionModal(p.name, () => loadPlugins(false));
-
-                        const btnRepair = document.createElement("button");
-                        btnRepair.className = "em-btn em-plugin-btn";
-                        btnRepair.textContent = "修复";
-                        btnRepair.title = "恢复缺失或被修改的仓库文件，保留本地额外文件";
-                        btnRepair.onclick = () => repairPlugin(p, false, btnRepair);
-
-                        const btnReinstall = document.createElement("button");
-                        btnReinstall.className = "em-btn em-plugin-btn em-btn-danger";
-                        btnReinstall.textContent = "重装";
-                        btnReinstall.title = "恢复远端版本，并清理本地额外文件";
-                        btnReinstall.onclick = () => repairPlugin(p, true, btnReinstall);
+                        // 次要操作：⋯ 菜单
+                        const btnMore = document.createElement("button");
+                        btnMore.className = "em-btn em-plugin-btn";
+                        btnMore.textContent = "⋯";
+                        btnMore.title = "更多操作";
+                        btnMore.style.padding = "0 9px";
+                        btnMore.onclick = (e) => {
+                            e.stopPropagation();
+                            const rect = btnMore.getBoundingClientRect();
+                            showContextMenu({
+                                clientX: rect.left,
+                                clientY: rect.bottom + 2,
+                                preventDefault: () => {}
+                            }, [
+                                { label: "切换版本", action: () => openVersionModal(p.name, () => loadPlugins(false)) },
+                                { label: "修复",     action: () => repairPlugin(p, false) },
+                                { label: "重装",     action: () => repairPlugin(p, true) },
+                                { divider: true },
+                                { label: "卸载", danger: true, action: () => uninstallPlugin(p) },
+                            ]);
+                        };
 
                         actions.appendChild(btnUpdate);
-                        actions.appendChild(btnVersion);
-                        actions.appendChild(btnRepair);
-                        actions.appendChild(btnReinstall);
+                        actions.appendChild(btnMore);
+                    } else {
+                        // 非 git 插件只能卸载
+                        const btnUninstall = document.createElement("button");
+                        btnUninstall.className = "em-btn em-plugin-btn em-btn-danger";
+                        btnUninstall.textContent = "卸载";
+                        btnUninstall.onclick = (e) => { e.stopPropagation(); uninstallPlugin(p); };
+                        actions.appendChild(btnUninstall);
                     }
-
-                    const btnUninstall = document.createElement("button");
-                    btnUninstall.className = "em-btn em-plugin-btn em-btn-danger";
-                    btnUninstall.textContent = "卸载";
-                    btnUninstall.onclick = async () => {
-                        if (!confirm(`确认卸载 "${p.name}"？\n此操作不可恢复，重启后生效！`)) return;
-                        try {
-                            const res  = await fetch("/extension_manager/plugins/uninstall", {
-                                method: "POST",
-                                headers: {"Content-Type": "application/json"},
-                                body: JSON.stringify({name: p.name})
-                            });
-                            const json = await res.json();
-                            if (json.status === "success") {
-                                alert(`${p.name} 已卸载，重启 ComfyUI 后生效`);
-                                loadPlugins(false);
-                            } else {
-                                alert(`卸载失败: ${json.msg}`);
-                            }
-                        } catch (e) {
-                            alert("请求失败: " + e);
-                        }
-                    };
-                    actions.appendChild(btnUninstall);
 
                     tbody.appendChild(tr);
                 }
@@ -647,69 +1073,124 @@ app.registerExtension({
                     _lastPluginList = plugins;
                     renderTable(plugins);
                 } catch (e) {
-                    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:#f66;">加载失败: ${e}</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:#f66;">加载失败: ${_escapeHtml(String(e))}</td></tr>`;
                 } finally {
                     [btnRefresh, btnCheck, btnUpdateAll].forEach(b => b.disabled = false);
                 }
             }
 
-            const urlInput   = container.querySelector("#em-plugin-url");
-            const btnInstall = container.querySelector("#em-plugin-install");
-            const btnExport  = container.querySelector("#em-plugin-export");
-            const btnImport  = container.querySelector("#em-plugin-import");
-
-            // ============ 导出/导入清单（插件同步） ============
-            function _confirmImportDialog(count) {
-                return new Promise((resolve) => {
-                    const overlay = document.createElement("div");
-                    overlay.style.cssText = [
-                        "position:fixed;inset:0;z-index:10001;",
-                        "background:rgba(0,0,0,0.72);",
-                        "display:flex;align-items:center;justify-content:center;"
-                    ].join("");
-                    const dialog = document.createElement("div");
-                    dialog.style.cssText = [
-                        "background:var(--comfy-menu-bg,#1e1e1e);",
-                        "border:1px solid #333;border-radius:8px;",
-                        "padding:18px 20px;min-width:380px;color:#ddd;",
-                        "box-shadow:0 8px 40px rgba(0,0,0,0.6);"
-                    ].join("");
-                    dialog.innerHTML = `
-                        <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:#ddd;">确认导入清单</div>
-                        <div style="font-size:12px;color:#bbb;margin-bottom:14px;line-height:1.5;">
-                            将根据清单批量安装 <b style="color:#ddd;">${count}</b> 个插件。<br>
-                            已存在的插件会被跳过（不覆盖、不更新）。
-                        </div>
-                        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#ccc;cursor:pointer;margin-bottom:18px;user-select:none;">
-                            <input type="checkbox" id="em-import-pin" style="cursor:pointer;margin:0;">
-                            锁定到清单记录的版本（commit）
-                        </label>
-                        <div style="display:flex;gap:8px;justify-content:flex-end;">
-                            <button class="em-btn" id="em-import-cancel" style="flex:none;padding:0 16px;height:30px;">取消</button>
-                            <button class="em-btn" id="em-import-ok" style="flex:none;padding:0 16px;height:30px;">开始安装</button>
-                        </div>
-                    `;
-                    overlay.appendChild(dialog);
-                    document.body.appendChild(overlay);
-                    const cleanup = () => document.body.removeChild(overlay);
-                    dialog.querySelector("#em-import-cancel").onclick = () => { cleanup(); resolve(null); };
-                    dialog.querySelector("#em-import-ok").onclick = () => {
-                        const pin = dialog.querySelector("#em-import-pin").checked;
-                        cleanup();
-                        resolve({ pin });
-                    };
-                    overlay.addEventListener("click", (e) => {
-                        if (e.target === overlay) { cleanup(); resolve(null); }
-                    });
+            // —— 一键更新 ——
+            async function updateAll() {
+                const ok = await showConfirm({
+                    title: "确认更新所有插件?",
+                    message: "将对所有 git 插件执行 git pull --ff-only。",
                 });
+                if (!ok) return;
+                btnUpdateAll.disabled = true;
+                const oldText = btnUpdateAll.textContent;
+                btnUpdateAll.textContent = "更新中…";
+                const inProgress = showToast({ type: "info", msg: "正在批量更新...", duration: 0 });
+                try {
+                    const res  = await fetch("/extension_manager/plugins/update_all", { method: "POST" });
+                    const json = await res.json();
+                    const results = json.results || [];
+                    let updated = 0, errors = 0;
+                    const errorLines = [];
+                    for (const r of results) {
+                        if (r.status === "success") {
+                            const noChange = !r.output || _NO_CHANGE_RE.test(r.output);
+                            if (!noChange) {
+                                markPendingRestart(r.name.replace(/\.disabled$/, ""));
+                                updated++;
+                            }
+                        } else {
+                            errors++;
+                            errorLines.push(`• ${r.name}: ${r.output}`);
+                        }
+                    }
+                    inProgress.dismiss();
+                    const noChangeCount = results.length - updated - errors;
+                    const summary = `${updated} 已更新 / ${noChangeCount} 已最新 / ${errors} 失败`;
+                    showToast({
+                        type: errors > 0 ? "warning" : "success",
+                        msg: `批量更新完成: ${summary}`,
+                        duration: 6000,
+                    });
+                    if (errors > 0) {
+                        await showCustomDialog({
+                            title: "更新失败项",
+                            contentHTML: `<div style="font-family:monospace;font-size:11px;color:#ccc;white-space:pre-wrap;max-height:300px;overflow:auto;">${_escapeHtml(errorLines.join("\n"))}</div>`,
+                            buttons: [{ label: "知道了", value: true, primary: true }]
+                        });
+                    }
+                    loadPlugins(false);
+                } catch (e) {
+                    inProgress.dismiss();
+                    showToast({ type: "error", msg: "请求失败: " + e });
+                } finally {
+                    btnUpdateAll.disabled = false;
+                    btnUpdateAll.textContent = oldText;
+                }
             }
 
+            // —— 安装弹框 ——
+            async function openInstallDialog() {
+                const url = await showCustomDialog({
+                    title: "安装插件",
+                    contentHTML: `
+                        <div style="margin-bottom:8px;color:#ccc;">输入 Git URL（支持 https / ssh）：</div>
+                        <input type="text" id="em-install-url"
+                               placeholder="git@github.com:user/repo.git 或 https://..."/>
+                        <div style="margin-top:8px;font-size:11px;color:#777;">私有库需要先在容器内配置 SSH key。</div>
+                    `,
+                    buttons: [
+                        { label: "取消", value: null },
+                        { label: "安装", value: (content) => content.querySelector("#em-install-url").value.trim(), primary: true },
+                    ],
+                    onMount: (content, dialog) => {
+                        const input  = content.querySelector("#em-install-url");
+                        const okBtn  = dialog.querySelector(".em-btn-primary");
+                        input.addEventListener("keydown", (e) => {
+                            if (e.key === "Enter") { e.preventDefault(); okBtn.click(); }
+                        });
+                    },
+                });
+                if (!url) return;
+
+                btnInstallBtn.disabled = true;
+                const oldText = btnInstallBtn.textContent;
+                btnInstallBtn.textContent = "安装中…";
+                const inProgress = showToast({ type: "info", msg: "正在安装...", duration: 0 });
+                try {
+                    const res  = await fetch("/extension_manager/plugins/install", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({url})
+                    });
+                    const json = await res.json();
+                    inProgress.dismiss();
+                    if (json.status === "success") {
+                        markPendingRestart(json.name);
+                        showToast({ type: "success", msg: `${json.name} 已安装` });
+                        loadPlugins(false);
+                    } else {
+                        showToast({ type: "error", msg: `安装失败: ${json.msg}` });
+                    }
+                } catch (e) {
+                    inProgress.dismiss();
+                    showToast({ type: "error", msg: "请求失败: " + e });
+                } finally {
+                    btnInstallBtn.disabled = false;
+                    btnInstallBtn.textContent = oldText;
+                }
+            }
+
+            // —— 导出/导入清单 ——
             function exportManifest() {
                 if (!_lastPluginList || _lastPluginList.length === 0) {
-                    alert("请先加载插件列表");
+                    showToast({ type: "warning", msg: "请先加载插件列表" });
                     return;
                 }
-                // 只导出有 remote 的 git 插件（非 git 插件无法 clone 同步）
                 const items = _lastPluginList
                     .filter(p => p.is_git && p.remote)
                     .map(p => ({
@@ -720,7 +1201,7 @@ app.registerExtension({
                         enabled: !!p.enabled,
                     }));
                 if (items.length === 0) {
-                    alert("当前没有可导出的 git 插件");
+                    showToast({ type: "warning", msg: "当前没有可导出的 git 插件" });
                     return;
                 }
                 const manifest = {
@@ -737,6 +1218,7 @@ app.registerExtension({
                 a.click();
                 document.body.removeChild(a);
                 URL.revokeObjectURL(a.href);
+                showToast({ type: "success", msg: `已导出 ${items.length} 个插件清单` });
             }
 
             async function importManifest() {
@@ -749,103 +1231,96 @@ app.registerExtension({
                     let manifest;
                     try {
                         const text = await file.text();
-                        manifest   = JSON.parse(text);
+                        manifest = JSON.parse(text);
                     } catch (e) {
-                        alert("清单文件解析失败: " + e);
+                        showToast({ type: "error", msg: "清单解析失败: " + e });
                         return;
                     }
                     if (!manifest || !Array.isArray(manifest.plugins) || manifest.plugins.length === 0) {
-                        alert("清单为空或格式错误");
+                        showToast({ type: "error", msg: "清单为空或格式错误" });
                         return;
                     }
-                    const choice = await _confirmImportDialog(manifest.plugins.length);
+                    const choice = await showCustomDialog({
+                        title: "确认导入清单",
+                        contentHTML: `
+                            <div style="line-height:1.6;margin-bottom:14px;">将根据清单批量安装 <b style="color:#ddd;">${manifest.plugins.length}</b> 个插件。<br>已存在的插件会被跳过（不覆盖、不更新）。</div>
+                            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#ccc;cursor:pointer;user-select:none;">
+                                <input type="checkbox" id="em-import-pin" style="cursor:pointer;margin:0;">
+                                锁定到清单记录的版本（commit）
+                            </label>
+                        `,
+                        buttons: [
+                            { label: "取消", value: null },
+                            { label: "开始安装", value: (content) => ({ pin: content.querySelector("#em-import-pin").checked }), primary: true },
+                        ]
+                    });
                     if (!choice) return;
 
                     btnImport.disabled = true;
+                    const oldText = btnImport.textContent;
                     btnImport.textContent = "安装中…";
+                    const inProgress = showToast({
+                        type: "info",
+                        msg: `正在批量安装 ${manifest.plugins.length} 个插件...`,
+                        duration: 0,
+                    });
                     try {
-                        const res  = await fetch("/extension_manager/plugins/install_batch", {
-                            method:  "POST",
+                        const res = await fetch("/extension_manager/plugins/install_batch", {
+                            method: "POST",
                             headers: { "Content-Type": "application/json" },
-                            body:    JSON.stringify({ plugins: manifest.plugins, pin: choice.pin }),
+                            body: JSON.stringify({ plugins: manifest.plugins, pin: choice.pin }),
                         });
                         const json = await res.json();
+                        inProgress.dismiss();
                         if (json.status !== "success") {
-                            alert("导入失败: " + (json.msg || "未知错误"));
+                            showToast({ type: "error", msg: "导入失败: " + (json.msg || "未知错误") });
                             return;
                         }
-                        const sign = {
-                            installed:        "✓",
-                            skipped_existing: "→",
-                            skipped_conflict: "⚠",
-                            error:            "✗",
-                        };
-                        const lines = (json.results || []).map(r =>
-                            `${sign[r.status] || "?"} ${r.name}: ${r.msg || r.status}`
-                        );
-                        alert(`导入完成（${lines.length} 项）:\n\n${lines.join("\n")}\n\n重启 ComfyUI 后生效`);
+                        const results = json.results || [];
+                        const counts = { installed: 0, skipped_existing: 0, skipped_conflict: 0, error: 0 };
+                        for (const r of results) {
+                            counts[r.status] = (counts[r.status] || 0) + 1;
+                            if (r.status === "installed") markPendingRestart(r.name);
+                        }
+                        const summary = `已装 ${counts.installed} / 跳过 ${counts.skipped_existing} / 冲突 ${counts.skipped_conflict} / 失败 ${counts.error}`;
+                        const toastType = counts.error > 0 ? "warning" : (counts.installed > 0 ? "success" : "info");
+                        showToast({ type: toastType, msg: `导入完成: ${summary}`, duration: 8000 });
+                        if (counts.error > 0 || counts.skipped_conflict > 0) {
+                            const detailLines = results
+                                .filter(r => r.status === "error" || r.status === "skipped_conflict")
+                                .map(r => `• ${r.name}: ${r.msg || r.status}`);
+                            await showCustomDialog({
+                                title: "导入详情（异常项）",
+                                contentHTML: `<div style="font-family:monospace;font-size:11px;color:#ccc;white-space:pre-wrap;max-height:300px;overflow:auto;">${_escapeHtml(detailLines.join("\n"))}</div>`,
+                                buttons: [{ label: "知道了", value: true, primary: true }]
+                            });
+                        }
                         loadPlugins(false);
                     } catch (e) {
-                        alert("请求失败: " + e);
+                        inProgress.dismiss();
+                        showToast({ type: "error", msg: "请求失败: " + e });
                     } finally {
                         btnImport.disabled = false;
-                        btnImport.textContent = "导入清单";
+                        btnImport.textContent = oldText;
                     }
                 };
                 input.click();
             }
 
-            btnRefresh.onclick   = () => loadPlugins(false);
-            btnCheck.onclick     = () => loadPlugins(true);
-            btnExport.onclick    = exportManifest;
-            btnImport.onclick    = importManifest;
-            btnUpdateAll.onclick = async () => {
-                if (!confirm("确认更新所有插件？")) return;
-                btnUpdateAll.disabled = true;
-                btnUpdateAll.textContent = "更新中…";
-                try {
-                    const res  = await fetch("/extension_manager/plugins/update_all", {method: "POST"});
-                    const json = await res.json();
-                    const summary = json.results
-                        .map(r => `${r.name}: ${r.status === "success" ? "✓ " + (r.output || "已是最新") : "✗ " + r.output}`)
-                        .join("\n");
-                    alert("更新完成:\n\n" + summary);
-                    loadPlugins(false);
-                } catch (e) {
-                    alert("请求失败: " + e);
-                } finally {
-                    btnUpdateAll.disabled = false;
-                    btnUpdateAll.textContent = "一键更新";
-                }
-            };
+            // —— wiring ——
+            btnRefresh.onclick    = () => loadPlugins(false);
+            btnCheck.onclick      = () => loadPlugins(true);
+            btnUpdateAll.onclick  = updateAll;
+            btnInstallBtn.onclick = openInstallDialog;
+            btnExport.onclick     = exportManifest;
+            btnImport.onclick     = importManifest;
+            btnReboot.onclick     = rebootComfyUI;
 
-            btnInstall.onclick = async () => {
-                const url = urlInput.value.trim();
-                if (!url) { urlInput.focus(); return; }
-                btnInstall.disabled = true;
-                btnInstall.textContent = "安装中…";
-                try {
-                    const res  = await fetch("/extension_manager/plugins/install", {
-                        method: "POST",
-                        headers: {"Content-Type": "application/json"},
-                        body: JSON.stringify({url})
-                    });
-                    const json = await res.json();
-                    if (json.status === "success") {
-                        urlInput.value = "";
-                        alert(`${json.name} 安装成功，重启 ComfyUI 后生效`);
-                        loadPlugins(false);
-                    } else {
-                        alert(`安装失败: ${json.msg}`);
-                    }
-                } catch (e) {
-                    alert("请求失败: " + e);
-                } finally {
-                    btnInstall.disabled = false;
-                    btnInstall.textContent = "安装";
-                }
+            // 搜索（实时过滤，KISS：列表通常 <100 项，不需要去抖）
+            searchInput.oninput = () => {
+                _searchTerm = searchInput.value.trim().toLowerCase();
+                renderTable(_lastPluginList);
             };
-            urlInput.addEventListener("keydown", (e) => { if (e.key === "Enter") btnInstall.click(); });
 
             loadPlugins(false);
         }
