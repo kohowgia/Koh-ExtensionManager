@@ -483,7 +483,13 @@ app.registerExtension({
                         headers: {"Content-Type": "application/json"},
                         body: JSON.stringify({name: p.name, clean})
                     });
-                    const json = await res.json();
+                    const text = await res.text();
+                    let json;
+                    try {
+                        json = JSON.parse(text);
+                    } catch (_) {
+                        throw new Error(text || `HTTP ${res.status}`);
+                    }
                     if (json.status === "success") {
                         alert(`${p.name} ${title}完成:\n${json.output || "完成"}`);
                         loadPlugins(false);
