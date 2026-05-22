@@ -1546,6 +1546,12 @@ app.registerExtension({
             }
 
             // —— 导出/导入清单 ——
+            // 本地时间戳（避免 ISO UTC 与北京时差 8 小时的困扰）
+            function _localTs() {
+                const d = new Date();
+                const pad = n => String(n).padStart(2, "0");
+                return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+            }
             function exportManifest() {
                 if (!_lastPluginList || _lastPluginList.length === 0) {
                     showToast({ type: "warning", msg: "请先加载插件列表" });
@@ -1564,16 +1570,17 @@ app.registerExtension({
                     showToast({ type: "warning", msg: "当前没有可导出的 git 插件" });
                     return;
                 }
+                const localTs = _localTs();
                 const manifest = {
-                    exported_at: new Date().toISOString().slice(0, 19).replace("T", " "),
+                    exported_at: localTs,
                     source: "ComfyUI-Plugins",
                     plugins: items,
                 };
                 const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" });
-                const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+                const fnameTs = localTs.replace(/[: ]/g, "-");
                 const a = document.createElement("a");
                 a.href = URL.createObjectURL(blob);
-                a.download = `comfyui-plugins-${ts}.json`;
+                a.download = `comfyui-plugins-${fnameTs}.json`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
