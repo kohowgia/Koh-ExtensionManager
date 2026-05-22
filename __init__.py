@@ -1,11 +1,143 @@
 import os
+import re
+import json
+import time
 import shutil
 import subprocess
 import asyncio
+import urllib.request
+import urllib.error
 from aiohttp import web
 from server import PromptServer
 
 routes = PromptServer.instance.routes
+
+# ================ GitHub 元数据缓存 ================
+
+_GITHUB_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".github_cache.json")
+_GITHUB_CACHE_TTL  = 86400  # 24h
+_github_cache = None        # 模块级内存缓存：{ "owner/repo": {stars, author, fetched_at} }
+
+
+def _parse_github(remote):
+    """解析 GitHub remote → (owner, repo)；支持 https / ssh，均不区分 .git 后缀。失败返回 (None, None)。"""
+    if not remote:
+        return None, None
+    s = remote.strip()
+    # git@github.com:owner/repo(.git)
+    m = re.match(r"^git@github\.com:([^/]+)/(.+?)(?:\.git)?/?$", s, re.IGNORECASE)
+    if m:
+        return m.group(1), m.group(2)
+    # https://github.com/owner/repo(.git)
+    m = re.match(r"^https?://github\.com/([^/]+)/(.+?)(?:\.git)?/?$", s, re.IGNORECASE)
+    if m:
+        return m.group(1), m.group(2)
+    return None, None
+
+
+def _load_github_cache():
+    global _github_cache
+    if _github_cache is not None:
+        return _github_cache
+    try:
+        with open(_GITHUB_CACHE_FILE, "r", encoding="utf-8") as f:
+            _github_cache = json.load(f)
+        if not isinstance(_github_cache, dict):
+            _github_cache = {}
+    except Exception:
+        _github_cache = {}
+    return _github_cache
+
+
+def _save_github_cache():
+    try:
+        with open(_GITHUB_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(_github_cache, f)
+    except Exception:
+        pass  # 只读环境等：静默忽略
+
+
+def _fetch_github_repo(owner, repo):
+    """请求 GitHub API，返回 (stars, author) 或抛异常（含 HTTPError，便于识别限流）。"""
+    url = f"https://api.github.com/repos/{owner}/{repo}"
+    req = urllib.request.Request(url)
+    req.add_header("User-Agent", "Koh-ExtensionManager")
+    req.add_header("Accept", "application/vnd.github+json")
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    stars  = data.get("stargazers_count")
+    author = (data.get("owner") or {}).get("login") or owner
+    return stars, author
+
+
+# ---- 复用 ComfyUI-Manager 预聚合的星标快照（避免 GitHub 限流）----
+# ComfyUI-Manager 维护两个 JSON：github-stats.json（上游快照，~5000 项）+ github-stats-cache.json（增量）
+_external_stats       = None   # 合并后的 dict：{ "https://github.com/owner/repo": {stars,...} }
+_external_stats_mtime = None   # (mtime1, mtime2) 元组，文件变化时重载
+
+
+def _comfyui_manager_dir():
+    """定位同级 ComfyUI-Manager 目录（含 .disabled 变体），不存在则返回 None。"""
+    nodes_dir = _get_custom_nodes_dir()
+    for cand in ("ComfyUI-Manager", "ComfyUI-Manager.disabled"):
+        p = os.path.join(nodes_dir, cand)
+        if os.path.isdir(p):
+            return p
+    return None
+
+
+def _load_external_stats():
+    """惰性加载 + mtime 失效检测。两个文件均不存在返回空 dict。"""
+    global _external_stats, _external_stats_mtime
+    mgr = _comfyui_manager_dir()
+    if not mgr:
+        _external_stats = {}
+        _external_stats_mtime = None
+        return _external_stats
+
+    files = [
+        os.path.join(mgr, "github-stats.json"),
+        os.path.join(mgr, "github-stats-cache.json"),
+    ]
+    mtimes = tuple(os.path.getmtime(f) if os.path.isfile(f) else 0 for f in files)
+    if _external_stats is not None and mtimes == _external_stats_mtime:
+        return _external_stats
+
+    merged = {}
+    for f in files:
+        if not os.path.isfile(f):
+            continue
+        try:
+            with open(f, "r", encoding="utf-8") as fp:
+                d = json.load(fp)
+            if isinstance(d, dict):
+                merged.update(d)  # github-stats-cache.json 后加载，覆盖前者
+        except Exception:
+            pass
+    _external_stats = merged
+    _external_stats_mtime = mtimes
+    return _external_stats
+
+
+def _lookup_external(owner, repo):
+    """从外部快照查 stars/author。命中返回 {stars, author}，否则 None。"""
+    if not owner or not repo:
+        return None
+    stats = _load_external_stats()
+    key = f"https://github.com/{owner}/{repo}"
+    entry = stats.get(key)
+    if entry is None:
+        # 有的 key 是错别字 'htps://'，尝试一次
+        entry = stats.get("htps://github.com/" + owner + "/" + repo)
+    if entry is None:
+        return None
+    stars = entry.get("stars")
+    if stars is None:
+        return None
+    return {"stars": stars, "author": owner}
 
 
 # ================ 辅助函数 ================
@@ -430,26 +562,242 @@ def _install_one_from_manifest(nodes_dir, item, pin):
     return {"name": name, "status": "installed", "msg": "已安装"}
 
 
+def _update_one_from_manifest(nodes_dir, item, update_mode):
+    """更新已安装插件 → {name, status, msg}。
+    update_mode: latest（git pull --ff-only）| pin（fetch + checkout 清单 commit）
+    status: updated | error
+    """
+    name   = (item.get("name") or "").strip()
+    commit = (item.get("commit") or "").strip()
+    if not name:
+        return {"name": name or "?", "status": "error", "msg": "Missing name"}
+    if any(ch in name for ch in ["/", "\\", ".."]):
+        return {"name": name, "status": "error", "msg": "Invalid plugin name"}
+
+    # 定位目录（含 .disabled 变体）
+    target_dir   = os.path.join(nodes_dir, name)
+    disabled_dir = os.path.join(nodes_dir, name + ".disabled")
+    plugin_dir   = target_dir if os.path.isdir(target_dir) else (
+        disabled_dir if os.path.isdir(disabled_dir) else None
+    )
+    if plugin_dir is None:
+        return {"name": name, "status": "error", "msg": "插件不存在"}
+    if not os.path.isdir(os.path.join(plugin_dir, ".git")):
+        return {"name": name, "status": "error", "msg": "非 git 仓库"}
+
+    if update_mode == "pin" and commit:
+        code, _, stderr = _run_git(plugin_dir, "fetch", "origin", timeout=60)
+        if code != 0:
+            return {"name": name, "status": "error", "msg": (stderr or "fetch failed")[:200]}
+        code, stdout, stderr = _run_git(plugin_dir, "checkout", commit, timeout=30)
+        if code != 0:
+            return {"name": name, "status": "error", "msg": (stderr or stdout or "checkout failed")[:200]}
+        return {"name": name, "status": "updated", "msg": f"已锁定到 {commit}"}
+
+    code, stdout, stderr = _run_git(plugin_dir, "pull", "--ff-only", timeout=60)
+    if code != 0:
+        return {"name": name, "status": "error", "msg": (stderr or stdout or "pull failed")[:200]}
+    return {"name": name, "status": "updated", "msg": (stdout or "已更新")[:200]}
+
+
 @routes.post("/extension_manager/plugins/install_batch")
 async def plugin_install_batch(request):
     try:
-        data    = await request.json()
-        plugins = data.get("plugins", [])
-        pin     = bool(data.get("pin", False))
+        data        = await request.json()
+        plugins     = data.get("plugins", [])
+        pin         = bool(data.get("pin", False))
+        update_mode = data.get("update_mode", "latest")
+        if update_mode not in ("latest", "pin"):
+            update_mode = "latest"
         if not isinstance(plugins, list) or not plugins:
             return web.json_response({"status": "error", "msg": "Empty plugins list"}, status=400)
 
         nodes_dir = _get_custom_nodes_dir()
         loop = asyncio.get_event_loop()
 
-        # 顺序处理：clone 串行更稳，避免 GitHub 限流、便于阅读报告
+        # 顺序处理：clone/pull 串行更稳，避免 GitHub 限流、便于阅读报告
         results = []
         for item in plugins:
-            r = await loop.run_in_executor(
-                None, lambda it=item: _install_one_from_manifest(nodes_dir, it, pin)
-            )
+            action = (item.get("action") or "install").strip()
+            if action == "update":
+                r = await loop.run_in_executor(
+                    None, lambda it=item: _update_one_from_manifest(nodes_dir, it, update_mode)
+                )
+            else:
+                r = await loop.run_in_executor(
+                    None, lambda it=item: _install_one_from_manifest(nodes_dir, it, pin)
+                )
             results.append(r)
 
+        return web.json_response({"status": "success", "results": results})
+    except Exception as e:
+        return web.json_response({"status": "error", "msg": str(e)}, status=500)
+
+
+# ================ GitHub 星标 / 作者 ================
+
+@routes.post("/extension_manager/plugins/github_meta")
+async def plugins_github_meta(request):
+    """批量查询 GitHub 星标/作者。缓存优先（TTL 24h），过期/缺失才走网络；遇限流停止剩余请求。"""
+    try:
+        data    = await request.json()
+        remotes = data.get("remotes", [])
+        if not isinstance(remotes, list):
+            return web.json_response({"status": "error", "msg": "remotes must be a list"}, status=400)
+
+        cache = _load_github_cache()
+        now   = time.time()
+        loop  = asyncio.get_event_loop()
+
+        results      = {}
+        rate_limited = False
+        dirty        = False
+
+        # 去重（多个 remote 可能指向同一 repo）
+        seen = []
+        for r in remotes:
+            if r and r not in seen:
+                seen.append(r)
+
+        for remote in seen:
+            owner, repo = _parse_github(remote)
+            if not owner or not repo:
+                results[remote] = {"stars": None, "author": None, "cached": False}
+                continue
+
+            key    = f"{owner}/{repo}"
+            cached = cache.get(key)
+            if cached and (now - cached.get("fetched_at", 0) < _GITHUB_CACHE_TTL):
+                results[remote] = {"stars": cached.get("stars"), "author": cached.get("author"), "cached": True, "source": "cache"}
+                continue
+
+            # 优先复用 ComfyUI-Manager 的预聚合快照（无网络、无限流）
+            ext = _lookup_external(owner, repo)
+            if ext is not None:
+                results[remote] = {"stars": ext["stars"], "author": ext["author"], "cached": True, "source": "manager"}
+                continue
+
+            # 已限流：剩余项回退缓存值（即便过期）或 null
+            if rate_limited:
+                results[remote] = {
+                    "stars": cached.get("stars") if cached else None,
+                    "author": cached.get("author") if cached else owner,
+                    "cached": bool(cached), "rate_limited": True,
+                }
+                continue
+
+            try:
+                stars, author = await loop.run_in_executor(None, lambda o=owner, p=repo: _fetch_github_repo(o, p))
+                cache[key] = {"stars": stars, "author": author, "fetched_at": now}
+                dirty = True
+                results[remote] = {"stars": stars, "author": author, "cached": False, "source": "network"}
+            except urllib.error.HTTPError as e:
+                if e.code in (403, 429):
+                    rate_limited = True
+                    results[remote] = {
+                        "stars": cached.get("stars") if cached else None,
+                        "author": cached.get("author") if cached else owner,
+                        "cached": bool(cached), "rate_limited": True,
+                    }
+                else:
+                    results[remote] = {"stars": None, "author": owner, "cached": False, "error": f"HTTP {e.code}"}
+            except Exception as e:
+                results[remote] = {"stars": None, "author": owner, "cached": False, "error": str(e)[:120]}
+
+        if dirty:
+            await loop.run_in_executor(None, _save_github_cache)
+
+        return web.json_response({"status": "success", "results": results, "rate_limited": rate_limited})
+    except Exception as e:
+        return web.json_response({"status": "error", "msg": str(e)}, status=500)
+
+
+# ================ 单插件检查更新 ================
+
+@routes.get("/extension_manager/plugins/check_one")
+async def plugin_check_one(request):
+    name = request.rel_url.query.get("name", "")
+    if not name:
+        return web.json_response({"status": "error", "msg": "Missing name"}, status=400)
+
+    plugin_dir, error = _get_git_plugin_dir(name)
+    if error:
+        status = 403 if error == "Invalid path" else 404
+        return web.json_response({"status": "error", "msg": error}, status=status)
+
+    loop = asyncio.get_event_loop()
+    info = await loop.run_in_executor(None, lambda: _get_plugin_info(plugin_dir, check_update=True))
+    return web.json_response({"status": "success", "info": info})
+
+
+# ================ 导入清单：差异对比 ================
+
+@routes.post("/extension_manager/plugins/manifest_diff")
+async def plugins_manifest_diff(request):
+    """对清单逐项与本地对比 → new | update | same | conflict。"""
+    try:
+        data    = await request.json()
+        plugins = data.get("plugins", [])
+        if not isinstance(plugins, list):
+            return web.json_response({"status": "error", "msg": "plugins must be a list"}, status=400)
+
+        nodes_dir = _get_custom_nodes_dir()
+        loop      = asyncio.get_event_loop()
+
+        def diff_one(item):
+            name   = (item.get("name") or "").strip()
+            remote = (item.get("remote") or "").strip()
+            m_commit = (item.get("commit") or "").strip()
+            m_branch = (item.get("branch") or "").strip()
+            owner, _ = _parse_github(remote)
+
+            base = {
+                "name": name, "remote": remote,
+                "manifest_commit": m_commit, "manifest_branch": m_branch,
+                "author": owner, "installed": False,
+                "local_commit": "", "local_remote": "",
+            }
+            if not name or not remote:
+                base["status"] = "conflict"
+                base["msg"] = "清单项缺少 name 或 remote"
+                return base
+
+            target_dir   = os.path.join(nodes_dir, name)
+            disabled_dir = os.path.join(nodes_dir, name + ".disabled")
+            existing_dir = target_dir if os.path.isdir(target_dir) else (
+                disabled_dir if os.path.isdir(disabled_dir) else None
+            )
+
+            if existing_dir is None:
+                base["status"] = "new"
+                return base
+
+            base["installed"] = True
+            if not os.path.isdir(os.path.join(existing_dir, ".git")):
+                base["status"] = "conflict"
+                base["msg"] = "已存在同名目录但非 git 仓库"
+                return base
+
+            code, local_remote, _ = _run_git(existing_dir, "remote", "get-url", "origin")
+            local_remote = local_remote if code == 0 else ""
+            base["local_remote"] = local_remote
+            if _normalize_remote(local_remote) != _normalize_remote(remote):
+                base["status"] = "conflict"
+                base["msg"] = f"已存在但 remote 不同: {local_remote}"
+                return base
+
+            code, local_commit, _ = _run_git(existing_dir, "rev-parse", "--short", "HEAD")
+            local_commit = local_commit if code == 0 else ""
+            base["local_commit"] = local_commit
+
+            # 短哈希前缀互相匹配视为同版本
+            same = bool(local_commit) and bool(m_commit) and (
+                local_commit.startswith(m_commit) or m_commit.startswith(local_commit)
+            )
+            base["status"] = "same" if same else "update"
+            return base
+
+        results = await loop.run_in_executor(None, lambda: [diff_one(it) for it in plugins])
         return web.json_response({"status": "success", "results": results})
     except Exception as e:
         return web.json_response({"status": "error", "msg": str(e)}, status=500)
