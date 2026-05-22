@@ -15,8 +15,18 @@ routes = PromptServer.instance.routes
 # ================ GitHub 元数据缓存 ================
 
 _GITHUB_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".github_cache.json")
-_GITHUB_CACHE_TTL  = 86400  # 24h
+_GITHUB_CACHE_TTL  = 86400  # 24h（成功 / 持久错误）
+_GITHUB_RATELIMIT_TTL = 3600  # 1h（限流：GitHub 限额按小时重置）
 _github_cache = None        # 模块级内存缓存：{ "owner/repo": {stars, author, fetched_at} }
+
+
+def _cache_valid(entry, now):
+    """根据条目类型选择 TTL：限流走 1h，其余走 24h。"""
+    if not entry:
+        return False
+    age = now - entry.get("fetched_at", 0)
+    ttl = _GITHUB_RATELIMIT_TTL if entry.get("error") == "rate_limited" else _GITHUB_CACHE_TTL
+    return age < ttl
 
 
 def _parse_github(remote):
@@ -667,8 +677,13 @@ async def plugins_github_meta(request):
 
             key    = f"{owner}/{repo}"
             cached = cache.get(key)
-            if cached and (now - cached.get("fetched_at", 0) < _GITHUB_CACHE_TTL):
-                results[remote] = {"stars": cached.get("stars"), "author": cached.get("author"), "cached": True, "source": "cache"}
+            if _cache_valid(cached, now):
+                results[remote] = {
+                    "stars": cached.get("stars"),
+                    "author": cached.get("author") or owner,
+                    "cached": True, "source": "cache",
+                    "rate_limited": cached.get("error") == "rate_limited",
+                }
                 continue
 
             # 优先复用 ComfyUI-Manager 的预聚合快照（无网络、无限流）
@@ -693,14 +708,20 @@ async def plugins_github_meta(request):
                 results[remote] = {"stars": stars, "author": author, "cached": False, "source": "network"}
             except urllib.error.HTTPError as e:
                 if e.code in (403, 429):
+                    # 限流：缓存 1h 避免持续重试（限额按小时重置）
                     rate_limited = True
+                    cache[key] = {"stars": None, "author": owner, "fetched_at": now, "error": "rate_limited"}
+                    dirty = True
                     results[remote] = {
                         "stars": cached.get("stars") if cached else None,
                         "author": cached.get("author") if cached else owner,
                         "cached": bool(cached), "rate_limited": True,
                     }
                 else:
-                    results[remote] = {"stars": None, "author": owner, "cached": False, "error": f"HTTP {e.code}"}
+                    # 持久错误（404/私有/重命名等）：缓存为 null 避免每次刷新都重打
+                    cache[key] = {"stars": None, "author": owner, "fetched_at": now, "error": f"HTTP {e.code}"}
+                    dirty = True
+                    results[remote] = {"stars": None, "author": owner, "cached": False, "error": f"HTTP {e.code}", "source": "network"}
             except Exception as e:
                 results[remote] = {"stars": None, "author": owner, "cached": False, "error": str(e)[:120]}
 

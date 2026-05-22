@@ -268,7 +268,6 @@ app.registerExtension({
         // ================= 星标查询（懒加载 + 后端缓存）=================
         // remote -> {stars, author}；查询结果缓存在本次会话内存，避免重复请求
         const _starMemCache = new Map();
-        let _rateLimitNotified = false;
         async function loadStars(remotes, onResult) {
             const need = [...new Set(remotes.filter(r => r && _parseGithub(r)))];
             // 先回填内存缓存命中项
@@ -297,22 +296,19 @@ app.registerExtension({
                         _starMemCache.set(r, info);
                         onResult(r, info);
                     }
-                    if (json && json.rate_limited && !_rateLimitNotified) {
-                        _rateLimitNotified = true;
-                        showToast({
-                            type: "warning",
-                            msg: "GitHub API 已触发限流，部分星标暂不可用。\n可设置环境变量 GITHUB_TOKEN 提升限额（5000 次/小时）。",
-                            duration: 7000,
-                        });
-                    }
                 } catch (e) {
                     for (const r of batch) onResult(r, { stars: null, author: null, error: String(e) });
                 }
             }
         }
-        // 渲染星标单元格内容
+        // 渲染星标单元格内容（缺数据时鼠标悬停显示原因）
         function _starCellHtml(info) {
-            if (!info || info.stars == null) return '<span style="color:#555;">-</span>';
+            if (!info || info.stars == null) {
+                let tip = "无数据";
+                if (info && info.rate_limited) tip = "GitHub API 限流，1 小时后自动重试";
+                else if (info && info.error)   tip = "获取失败：" + info.error;
+                return `<span style="color:#555;" title="${_escapeHtml(tip)}">-</span>`;
+            }
             return `<span style="color:#dc6;">★ ${info.stars}</span>`;
         }
 
@@ -1037,16 +1033,16 @@ app.registerExtension({
             // 等待全部星标加载完成（按星标排序前调用）
             function _ensureStarsLoaded() {
                 const remotes = _lastPluginList
-                    .filter(p => _parseGithub(p.remote) && p._stars == null)
+                    .filter(p => _parseGithub(p.remote) && p._stars === undefined)
                     .map(p => p.remote);
                 if (remotes.length === 0) return Promise.resolve();
                 return new Promise(resolve => {
                     const pending = new Set(remotes);
                     loadStars(remotes, (remote, info) => {
-                        if (info && info.stars != null) {
-                            for (const p of _lastPluginList) {
-                                if (p.remote === remote) p._stars = info.stars;
-                            }
+                        // 始终回填：成功填数值，失败填 null（区分于 undefined "未尝试"）
+                        const v = (info && info.stars != null) ? info.stars : null;
+                        for (const p of _lastPluginList) {
+                            if (p.remote === remote) p._stars = v;
                         }
                         pending.delete(remote);
                         if (pending.size === 0) resolve();
@@ -1291,8 +1287,9 @@ app.registerExtension({
 
             // —— 渲染列表 ——
             function renderTable(plugins) {
-                // 兜底：保存的排序键是 stars 但数据未齐，异步等齐后再渲染一次（不会递归，第二次条件已不成立）
-                if (_sortKey === "stars" && plugins.some(p => _parseGithub(p.remote) && p._stars == null)) {
+                // 兜底：保存的排序键是 stars 但还有从未尝试加载的项时，异步等齐后再渲染一次
+                // 用 `=== undefined` 严格区分「未尝试」与「尝试过但无数据(null)」，避免死循环
+                if (_sortKey === "stars" && plugins.some(p => _parseGithub(p.remote) && p._stars === undefined)) {
                     _ensureStarsLoaded().then(() => renderTable(plugins));
                 }
 
@@ -1414,10 +1411,10 @@ app.registerExtension({
                         for (const cell of cells) {
                             if (cell && cell.isConnected) cell.innerHTML = _starCellHtml(info);
                         }
-                        if (info && info.stars != null) {
-                            for (const p of _lastPluginList) {
-                                if (p.remote === remote) p._stars = info.stars;
-                            }
+                        // 始终回填 _stars（失败置 null），避免按星标排序时无限重试
+                        const v = (info && info.stars != null) ? info.stars : null;
+                        for (const p of _lastPluginList) {
+                            if (p.remote === remote) p._stars = v;
                         }
                     });
                 }
