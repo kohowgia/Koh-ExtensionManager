@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import json
 import time
 import shutil
@@ -207,6 +208,78 @@ def _get_plugin_info(plugin_dir, check_update=False):
         "date": date_str,
         "has_update": has_update,
     }
+
+
+# ================ 安装后处理：依赖 / install.py ================
+
+def _comfyui_root():
+    """ComfyUI 根目录 = custom_nodes 的上一级。"""
+    return os.path.dirname(_get_custom_nodes_dir())
+
+
+def _tail(s, n=2000):
+    """截取尾部 n 字符（pip 报错关键信息通常在末尾）。"""
+    s = (s or "").strip()
+    return s[-n:] if len(s) > n else s
+
+
+def _post_install_setup(plugin_dir, timeout=600):
+    """clone 之后处理依赖。返回 (ok: bool, log: str)。
+
+    优先调 ComfyUI-Manager 的 cm-cli.py post-install：复用其 pip 安装 +
+    install.py + PIPFixer（torch 回滚 / opencv 去重等）全套逻辑，且该子命令
+    不联网拉注册表，适配无外网环境。
+    Manager 不在时 fallback 到内置实现（pip install -r requirements.txt + install.py）。
+    """
+    mgr   = _comfyui_manager_dir()
+    cmcli = os.path.join(mgr, "cm-cli.py") if mgr else None
+
+    if cmcli and os.path.isfile(cmcli):
+        env = dict(os.environ)
+        env["COMFYUI_PATH"] = _comfyui_root()  # 显式指定，避免子进程靠猜
+        try:
+            r = subprocess.run(
+                [sys.executable, cmcli, "post-install", plugin_dir],
+                cwd=mgr, capture_output=True, text=True, timeout=timeout, env=env
+            )
+            log = f"[cm-cli post-install] rc={r.returncode}\n{_tail(r.stdout)}\n{_tail(r.stderr)}"
+            return (r.returncode == 0), log.strip()
+        except subprocess.TimeoutExpired:
+            return False, "cm-cli post-install 超时"
+        except Exception as e:
+            return False, f"cm-cli post-install 调用失败: {e}"
+
+    return _post_install_fallback(plugin_dir, timeout=timeout)
+
+
+def _post_install_fallback(plugin_dir, timeout=600):
+    """Manager 不可用时的兜底：自己装 requirements.txt + 跑 install.py。"""
+    outputs = ["[fallback] ComfyUI-Manager 不可用，使用内置依赖安装"]
+    py = sys.executable  # ComfyUI 当前的 Python，避免装错环境
+
+    def _step(label, args):
+        try:
+            r = subprocess.run(
+                args, cwd=plugin_dir, capture_output=True, text=True, timeout=timeout
+            )
+            outputs.append(f"[{label}] rc={r.returncode}\n{_tail(r.stdout)}\n{_tail(r.stderr)}")
+            return r.returncode == 0
+        except subprocess.TimeoutExpired:
+            outputs.append(f"[{label}] 超时")
+            return False
+        except Exception as e:
+            outputs.append(f"[{label}] 异常: {e}")
+            return False
+
+    if os.path.isfile(os.path.join(plugin_dir, "requirements.txt")):
+        if not _step("pip", [py, "-m", "pip", "install", "-r", "requirements.txt"]):
+            return False, "\n".join(outputs)
+
+    if os.path.isfile(os.path.join(plugin_dir, "install.py")):
+        if not _step("install.py", [py, "install.py"]):
+            return False, "\n".join(outputs)
+
+    return True, "\n".join(outputs)
 
 
 # ================ 路由 ================
@@ -477,7 +550,22 @@ async def plugin_install(request):
         )
         if code != 0:
             return web.json_response({"status": "error", "msg": stderr or stdout}, status=500)
-        return web.json_response({"status": "success", "name": name})
+
+        # clone 成功 → 装依赖 + 跑 install.py
+        ok, log = await loop.run_in_executor(None, lambda: _post_install_setup(target_dir))
+        if not ok:
+            # 依赖装失败：禁用目录，避免下次启动 ComfyUI 因缺包崩溃
+            try:
+                os.rename(target_dir, target_dir + ".disabled")
+            except Exception:
+                pass
+            return web.json_response({
+                "status": "error",
+                "name": name,
+                "msg": "代码已下载，但依赖安装失败，已自动禁用以防启动崩溃。\n" + _tail(log, 1800),
+            }, status=500)
+
+        return web.json_response({"status": "success", "name": name, "output": _tail(log, 1800)})
     except Exception as e:
         return web.json_response({"status": "error", "msg": str(e)}, status=500)
 
@@ -560,6 +648,18 @@ def _install_one_from_manifest(nodes_dir, item, pin):
         if code != 0:
             return {"name": name, "status": "error",
                     "msg": f"clone 成功但 checkout 失败: {stderr[:200]}"}
+
+    # clone（含 checkout）成功 → 装依赖 + 跑 install.py
+    ok, log = _post_install_setup(target_dir)
+    if not ok:
+        # 依赖失败：禁用目录，避免下次启动 ComfyUI 因缺包崩溃
+        try:
+            if not os.path.isdir(disabled_dir):
+                os.rename(target_dir, disabled_dir)
+        except Exception:
+            pass
+        return {"name": name, "status": "error",
+                "msg": "代码已下载但依赖安装失败，已禁用。" + _tail(log, 300)}
 
     # 应用启用/禁用状态
     if not enabled:
