@@ -969,6 +969,55 @@ async def comfyui_version(request):
     return web.json_response({"status": "success", "version": info})
 
 
+# ================ 自带 ComfyUI 重启（Manager 不在时的兜底） ================
+
+@routes.post("/extension_manager/reboot")
+async def self_reboot(request):
+    """绕开 ComfyUI-Manager 直接重启 ComfyUI。
+
+    用途：Manager 未安装 / 路径变更（如 cu130-slim-v2 镜像把 Manager 改成 pip 包）
+    导致 /manager/reboot 不可用时的兜底。前端 fallback chain 的最后一档。
+
+    实现完全照搬 Manager 的 Legacy execv 逻辑（manager_server.py:1820-1836），
+    跨进程行为与 Manager 一致：
+    - os.execv 替换当前 Python 进程，容器不退出
+    - 不重跑 Docker entrypoint（环境变量改了不会生效）
+    - 重启后所有 custom_nodes 重新加载
+
+    安全：与 Manager 的 reboot 同等危险（替换主进程）。不加 security_level
+    校验是因为 Koh-ExtensionManager 本身就是"扩展管理器"，调用者已经在管理插件
+    生命周期，重启属于其职责范围。仍然依赖 ComfyUI 主进程的访问控制（默认仅
+    监听本地或受限网络）。
+    """
+    try:
+        # 关 ComfyUI 自己的日志接管（防止 execv 后 stdout 状态混乱）
+        try:
+            sys.stdout.close_log()
+        except Exception:
+            pass
+
+        # 复用 Manager 的命令重建逻辑
+        sys_argv = sys.argv.copy()
+        if '--windows-standalone-build' in sys_argv:
+            sys_argv.remove('--windows-standalone-build')
+
+        if sys_argv[0].endswith("__main__.py"):
+            module_name = os.path.basename(os.path.dirname(sys_argv[0]))
+            cmds = [sys.executable, '-m', module_name] + sys_argv[1:]
+        elif sys.platform.startswith('win32'):
+            cmds = ['"' + sys.executable + '"', '"' + sys_argv[0] + '"'] + sys_argv[1:]
+        else:
+            cmds = [sys.executable] + sys_argv
+
+        print("\n[Koh-ExtensionManager] Restarting ComfyUI (self execv)...\n", flush=True)
+        print(f"Command: {cmds}", flush=True)
+        os.execv(sys.executable, cmds)
+        # execv 替换了进程映像，下面的代码不会执行
+        return web.Response(status=200)
+    except Exception as e:
+        return web.json_response({"status": "error", "msg": str(e)}, status=500)
+
+
 NODE_CLASS_MAPPINGS = {}
 WEB_DIRECTORY = "./web"
 __all__ = ["NODE_CLASS_MAPPINGS", "WEB_DIRECTORY"]

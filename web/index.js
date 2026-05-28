@@ -1122,17 +1122,27 @@ app.registerExtension({
                 // 不走 api.fetchApi（会加 /api/ 前缀）：ComfyUI 把自定义节点路由复制到 /api/ 下
                 // 是标准行为，但跨版本组合下 POST 方法可能没被复制（症状：HTTP 405 Method Not Allowed）
                 //
-                // 旧版 Manager（2026-04-22 之前，commit 491f847b 加固之前）reboot 是 GET 而非 POST
-                // —— 遇到 405 + Allow 含 GET 时自动 fallback 到 GET，兼容新旧两种 Manager
+                // 三档 fallback chain：
+                //   ① POST /manager/reboot     （新版 Manager，commit 491f847b 之后）
+                //   ② GET  /manager/reboot     （旧版 Manager，①返回 405 + Allow 含 GET 时）
+                //   ③ POST /extension_manager/reboot  （Manager 未装/路径变更，①返回 404 时
+                //      —— 如 yanwk cu130-slim-v2 把 Manager 改成 pip 包，老路径不可用）
                 async function _hitReboot() {
-                    const r = await fetch("/manager/reboot", { method: "POST" });
+                    let r = await fetch("/manager/reboot", { method: "POST" });
+
                     if (r.status === 405) {
                         const allow = (r.headers.get("Allow") || "").toUpperCase();
                         if (allow.includes("GET")) {
                             console.info("[Koh-ExtensionManager] reboot endpoint accepts GET only (old Manager), retrying with GET");
-                            return await fetch("/manager/reboot", { method: "GET" });
+                            r = await fetch("/manager/reboot", { method: "GET" });
                         }
                     }
+
+                    if (r.status === 404) {
+                        console.info("[Koh-ExtensionManager] /manager/reboot 404, falling back to self-reboot endpoint");
+                        r = await fetch("/extension_manager/reboot", { method: "POST" });
+                    }
+
                     return r;
                 }
 
