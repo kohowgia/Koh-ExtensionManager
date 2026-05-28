@@ -217,6 +217,27 @@ def _comfyui_root():
     return os.path.dirname(_get_custom_nodes_dir())
 
 
+def _get_comfyui_version():
+    """读 ComfyUI 主目录 git 信息：branch / commit / tag。
+
+    失败返回 None（非 git 仓库 / 命令异常）。tag 用 git describe --tags --exact-match
+    取"恰好在此 commit 上的 tag"，没有则为空字符串（表示当前是 master/nightly 状态）。
+    """
+    root = _comfyui_root()
+    if not os.path.isdir(os.path.join(root, ".git")):
+        return None
+    c1, branch, _ = _run_git(root, "rev-parse", "--abbrev-ref", "HEAD")
+    c2, commit, _ = _run_git(root, "rev-parse", "HEAD")
+    if c1 != 0 or c2 != 0:
+        return None
+    c3, tag, _ = _run_git(root, "describe", "--tags", "--exact-match", "HEAD")
+    return {
+        "branch": branch,
+        "commit": commit,
+        "tag": tag if c3 == 0 else "",
+    }
+
+
 def _tail(s, n=2000):
     """截取尾部 n 字符（pip 报错关键信息通常在末尾）。"""
     s = (s or "").strip()
@@ -936,6 +957,16 @@ async def plugins_manifest_diff(request):
         return web.json_response({"status": "success", "results": results})
     except Exception as e:
         return web.json_response({"status": "error", "msg": str(e)}, status=500)
+
+
+# ================ ComfyUI 本体版本 ================
+
+@routes.get("/extension_manager/comfyui/version")
+async def comfyui_version(request):
+    """返回 ComfyUI 主仓库的 branch / commit / tag。非 git 部署 → version=None。"""
+    loop = asyncio.get_event_loop()
+    info = await loop.run_in_executor(None, _get_comfyui_version)
+    return web.json_response({"status": "success", "version": info})
 
 
 NODE_CLASS_MAPPINGS = {}

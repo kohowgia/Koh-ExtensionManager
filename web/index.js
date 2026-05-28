@@ -1615,17 +1615,65 @@ app.registerExtension({
                     return;
                 }
 
-                // 一并导出 ComfyUI 前端设置（comfy.settings.json 整包）
-                // 复用官方 api.getSettings()；失败不阻断插件清单导出
-                let settings = null;
+                // 拉 ComfyUI 本体版本（失败不阻断；非 git 部署 version 为 null）
+                let comfyVer = null;
                 try {
-                    settings = await api.getSettings();
-                    if (settings && typeof settings === "object") {
-                        // 剔除机器相关字段，避免覆盖目标机真实版本
-                        delete settings["Comfy.InstalledVersion"];
+                    const r = await fetch("/extension_manager/comfyui/version", { cache: "no-store" });
+                    if (r.ok) {
+                        const j = await r.json();
+                        comfyVer = j && j.version ? j.version : null;
                     }
-                } catch (e) {
-                    showToast({ type: "warning", msg: "设置读取失败，已仅导出插件清单" });
+                } catch (_) {}
+
+                // —— 导出选项对话框 ——
+                const verLine = comfyVer
+                    ? `${_escapeHtml(comfyVer.branch)}${comfyVer.tag ? ` · ${_escapeHtml(comfyVer.tag)}` : ""} @ ${_escapeHtml((comfyVer.commit || "").slice(0, 7))}`
+                    : `<span style="color:#888;">未检测到 ComfyUI git 信息</span>`;
+
+                const dlgHTML = `
+                    <div style="color:#ccc;font-size:12px;line-height:1.7;min-width:380px;">
+                        <div style="margin-bottom:10px;">将导出 <b>${items.length}</b> 个 git 插件清单。</div>
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;padding:6px 0;">
+                            <input type="checkbox" class="em-exp-settings" checked style="cursor:pointer;margin:0;">
+                            <span>同时导出界面/插件设置（comfy.settings.json）</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:8px;cursor:${comfyVer ? "pointer" : "not-allowed"};user-select:none;padding:6px 0;color:${comfyVer ? "#ccc" : "#666"};">
+                            <input type="checkbox" class="em-exp-comfyver" ${comfyVer ? "checked" : "disabled"} style="cursor:${comfyVer ? "pointer" : "not-allowed"};margin:0;">
+                            <span>同步 ComfyUI 版本号</span>
+                        </label>
+                        <div style="margin-left:24px;font-size:11px;color:#888;line-height:1.5;">${verLine}</div>
+                    </div>
+                `;
+
+                // 导出按钮的 value 设为函数：从 DOM 读 checkbox 状态返回（showCustomDialog 支持）
+                const choice = await showCustomDialog({
+                    title: "导出清单",
+                    contentHTML: dlgHTML,
+                    buttons: [
+                        { label: "取消", value: null },
+                        {
+                            label: "导出", primary: true,
+                            value: (contentEl) => ({
+                                wantSettings: !!contentEl.querySelector(".em-exp-settings")?.checked,
+                                wantComfyVer: !!contentEl.querySelector(".em-exp-comfyver")?.checked,
+                            }),
+                        },
+                    ],
+                });
+                if (!choice) return;
+
+                // 选择性导出 settings
+                let settings = null;
+                if (choice.wantSettings) {
+                    try {
+                        settings = await api.getSettings();
+                        if (settings && typeof settings === "object") {
+                            // 剔除机器相关字段，避免覆盖目标机真实版本
+                            delete settings["Comfy.InstalledVersion"];
+                        }
+                    } catch (e) {
+                        showToast({ type: "warning", msg: "设置读取失败，已仅导出插件清单" });
+                    }
                 }
 
                 const localTs = _localTs();
@@ -1633,8 +1681,10 @@ app.registerExtension({
                     exported_at: localTs,
                     source: "ComfyUI-Plugins",
                     plugins: items,
-                    settings: settings || null,
                 };
+                if (choice.wantComfyVer && comfyVer) manifest.comfyui = comfyVer;
+                if (settings)                        manifest.settings = settings;
+
                 const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" });
                 const fnameTs = localTs.replace(/[: ]/g, "-");
                 const a = document.createElement("a");
@@ -1644,8 +1694,11 @@ app.registerExtension({
                 a.click();
                 document.body.removeChild(a);
                 URL.revokeObjectURL(a.href);
-                const settingsNote = settings ? "（含界面设置）" : "";
-                showToast({ type: "success", msg: `已导出 ${items.length} 个插件清单${settingsNote}` });
+                const tags = [];
+                if (settings)                        tags.push("含界面设置");
+                if (choice.wantComfyVer && comfyVer) tags.push("含 ComfyUI 版本");
+                const noteText = tags.length ? `（${tags.join("，")}）` : "";
+                showToast({ type: "success", msg: `已导出 ${items.length} 个插件清单${noteText}` });
             }
 
             async function importManifest() {
@@ -1698,7 +1751,7 @@ app.registerExtension({
                     for (const it of manifest.plugins) byName[(it.name || "").trim()] = it;
                     for (const r of rows) r._manifest = byName[r.name] || {};
 
-                    openImportDiffModal(rows, manifest.settings);
+                    openImportDiffModal(rows, manifest.settings, manifest.comfyui);
                 };
                 input.click();
             }
@@ -1711,7 +1764,7 @@ app.registerExtension({
                 conflict: { cls: "em-badge-red",    text: "冲突"   },
             };
 
-            function openImportDiffModal(rows, settingsPayload) {
+            function openImportDiffModal(rows, settingsPayload, manifestComfyui) {
                 const overlay = document.createElement("div");
                 overlay.className = "em-dialog-overlay";
                 overlay.style.zIndex = "10000";
@@ -1765,6 +1818,48 @@ app.registerExtension({
                     <button class="em-btn em-btn-sm em-btn-primary em-imp-go" style="flex:none;padding:0 16px;">开始安装</button>
                 `;
 
+                // ComfyUI 版本对比条：仅当清单含 comfyui 字段时显示
+                const comfyBar = document.createElement("div");
+                comfyBar.style.cssText = "flex-shrink:0;padding:8px 16px;border-bottom:1px solid #2a2a2a;display:flex;align-items:center;gap:10px;font-size:12px;color:#bbb;";
+                comfyBar.style.display = manifestComfyui ? "flex" : "none";
+                comfyBar.innerHTML = `<span style="color:#666;">ComfyUI 版本对比加载中…</span>`;
+                if (manifestComfyui) {
+                    (async () => {
+                        let local = null;
+                        try {
+                            const r = await fetch("/extension_manager/comfyui/version", { cache: "no-store" });
+                            if (r.ok) local = (await r.json()).version;
+                        } catch (_) {}
+
+                        const fmtVer = (v) => v
+                            ? `${_escapeHtml(v.branch || "")}${v.tag ? ` · ${_escapeHtml(v.tag)}` : ""} @ ${_escapeHtml((v.commit || "").slice(0, 7))}`
+                            : '<span style="color:#888;">未知</span>';
+
+                        // 同版本判定：commit 前缀互相匹配
+                        const lc = (local && local.commit) || "";
+                        const mc = manifestComfyui.commit || "";
+                        const same = lc && mc && (lc.startsWith(mc) || mc.startsWith(lc));
+                        const enabled = !!local && !same;
+                        const tip = !local
+                            ? "未检测到本地 ComfyUI 版本（非 git 部署？切换不可用）"
+                            : same
+                                ? "本地与清单一致，无需切换"
+                                : "切换可能因 working tree 脏失败。失败后需手动 git reset --hard 清掉污染再重试。需 ComfyUI-Manager 已安装。";
+
+                        comfyBar.innerHTML = `
+                            <span style="color:#888;">ComfyUI 版本：</span>
+                            <span style="color:#ccc;">${fmtVer(local)}</span>
+                            <span style="color:#666;">→</span>
+                            <span style="color:${same ? "#6c6" : "#dd6"};">${fmtVer(manifestComfyui)}</span>
+                            ${same ? '<span style="color:#6c6;">✓ 已对齐</span>' : ''}
+                            <label style="display:flex;align-items:center;gap:6px;cursor:${enabled ? "pointer" : "not-allowed"};margin-left:14px;color:${enabled ? "#ccc" : "#666"};" title="${_escapeHtml(tip)}">
+                                <input type="checkbox" class="em-imp-switch-comfy" style="cursor:${enabled ? "pointer" : "not-allowed"};margin:0;" ${enabled ? "" : "disabled"}>
+                                <span>同步切换 ComfyUI 版本（默认不勾，需 ComfyUI-Manager）</span>
+                            </label>
+                        `;
+                    })();
+                }
+
                 // 表格
                 const scrollWrap = document.createElement("div");
                 scrollWrap.className = "em-plugin-scroll";
@@ -1785,6 +1880,7 @@ app.registerExtension({
 
                 dialog.appendChild(titleBar);
                 dialog.appendChild(toolbar);
+                dialog.appendChild(comfyBar);
                 dialog.appendChild(scrollWrap);
                 overlay.appendChild(dialog);
                 document.body.appendChild(overlay);
@@ -1896,7 +1992,12 @@ app.registerExtension({
                                 action:  r.status === "update" ? "update" : "install",
                             };
                         });
-                    if (selected.length === 0 && !wantSettings) return;
+                    if (selected.length === 0 && !wantSettings) {
+                        // 仍允许"仅切换 ComfyUI 版本"通过
+                        const switchChkEarly = comfyBar.querySelector(".em-imp-switch-comfy");
+                        const wantSwitchEarly = !!(switchChkEarly && switchChkEarly.checked && !switchChkEarly.disabled);
+                        if (!wantSwitchEarly) return;
+                    }
 
                     goBtn.disabled = true;
                     const oldText = goBtn.textContent;
@@ -1955,6 +2056,35 @@ app.registerExtension({
                             showToast({ type: "success", msg: "设置已恢复，刷新页面后生效", duration: 8000 });
                         } catch (e) {
                             showToast({ type: "error", msg: "设置恢复失败: " + e });
+                        }
+                    }
+
+                    // —— 同步切换 ComfyUI 版本（依赖 ComfyUI-Manager，失败给提示但不阻断）——
+                    const switchChk = comfyBar.querySelector(".em-imp-switch-comfy");
+                    const wantSwitchComfy = !!(switchChk && switchChk.checked && !switchChk.disabled);
+                    if (wantSwitchComfy && manifestComfyui) {
+                        // ver 参数：优先用 tag（人类可读），fallback 用 commit
+                        const ver = manifestComfyui.tag || manifestComfyui.commit;
+                        if (ver) {
+                            try {
+                                const r = await fetch("/comfyui_manager/comfyui_switch_version", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ ver }),
+                                });
+                                if (r.status === 200) {
+                                    showToast({ type: "success", msg: `ComfyUI 已切换到 ${ver}，需重启 ComfyUI 才能生效`, duration: 8000 });
+                                } else {
+                                    const text = await r.text().catch(() => "");
+                                    showToast({
+                                        type: "error",
+                                        duration: 12000,
+                                        msg: `ComfyUI 版本切换失败（HTTP ${r.status}）。${text ? text.slice(0, 200) : ""}\n常见原因：working tree 脏。可在容器内 git reset --hard HEAD 清理后重试。`,
+                                    });
+                                }
+                            } catch (e) {
+                                showToast({ type: "error", msg: `ComfyUI 版本切换请求失败：${e}\n请确认 ComfyUI-Manager 已安装。` });
+                            }
                         }
                     }
 
