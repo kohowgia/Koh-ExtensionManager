@@ -592,7 +592,21 @@ async def plugin_uninstall(request):
 
 
 def _normalize_remote(s):
-    return (s or "").strip().lower().rstrip("/")
+    """规范化 remote URL 用于对比同仓库识别。
+
+    - GitHub URL：提取 owner/repo 比对，吃掉 ssh/https 协议差异、有无 .git 后缀
+    - 非 GitHub：去尾斜杠、去 .git 后缀、转小写
+    """
+    s = (s or "").strip().rstrip("/")
+    if not s:
+        return ""
+    owner, repo = _parse_github(s)
+    if owner and repo:
+        return f"github.com/{owner.lower()}/{repo.lower()}"
+    s = s.lower()
+    if s.endswith(".git"):
+        s = s[:-4]
+    return s
 
 
 def _install_one_from_manifest(nodes_dir, item, pin):
