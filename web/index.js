@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 
 // 模块作用域：暴露给命令系统的入口
 let _openExtensionManagerModal = null;
@@ -1118,13 +1119,19 @@ app.registerExtension({
                 });
 
                 // 优先用 Comfy 的 api 客户端：自动处理反代/子路径前缀
-                const apiFetch = (window.comfyAPI?.api?.api?.fetchApi) || ((u, o) => fetch(u, o));
+                // 注意：必须用箭头函数包装保留 this，直接取 fetchApi 出来会丢 this 抛 TypeError
+                const apiObj = window.comfyAPI?.api?.api;
+                const apiFetch = (apiObj && typeof apiObj.fetchApi === "function")
+                    ? (u, o) => apiObj.fetchApi(u, o)
+                    : (u, o) => fetch(u, o);
 
                 let res;
                 try {
                     res = await apiFetch("/manager/reboot", { method: "POST" });
-                } catch (_) {
+                } catch (e) {
                     // 连接断开 = 进程已退出 = 重启正在发生（正常路径）
+                    // 但也可能是前端 bug（如方法 unbind 抛 TypeError），打 warn 留痕便于诊断
+                    console.warn("[Koh-ExtensionManager] reboot fetch threw:", e);
                     return;
                 }
 
@@ -1593,7 +1600,7 @@ app.registerExtension({
                 const pad = n => String(n).padStart(2, "0");
                 return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
             }
-            function exportManifest() {
+            async function exportManifest() {
                 if (!_lastPluginList || _lastPluginList.length === 0) {
                     showToast({ type: "warning", msg: "请先加载插件列表" });
                     return;
@@ -1611,11 +1618,26 @@ app.registerExtension({
                     showToast({ type: "warning", msg: "当前没有可导出的 git 插件" });
                     return;
                 }
+
+                // 一并导出 ComfyUI 前端设置（comfy.settings.json 整包）
+                // 复用官方 api.getSettings()；失败不阻断插件清单导出
+                let settings = null;
+                try {
+                    settings = await api.getSettings();
+                    if (settings && typeof settings === "object") {
+                        // 剔除机器相关字段，避免覆盖目标机真实版本
+                        delete settings["Comfy.InstalledVersion"];
+                    }
+                } catch (e) {
+                    showToast({ type: "warning", msg: "设置读取失败，已仅导出插件清单" });
+                }
+
                 const localTs = _localTs();
                 const manifest = {
                     exported_at: localTs,
                     source: "ComfyUI-Plugins",
                     plugins: items,
+                    settings: settings || null,
                 };
                 const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" });
                 const fnameTs = localTs.replace(/[: ]/g, "-");
@@ -1626,7 +1648,8 @@ app.registerExtension({
                 a.click();
                 document.body.removeChild(a);
                 URL.revokeObjectURL(a.href);
-                showToast({ type: "success", msg: `已导出 ${items.length} 个插件清单` });
+                const settingsNote = settings ? "（含界面设置）" : "";
+                showToast({ type: "success", msg: `已导出 ${items.length} 个插件清单${settingsNote}` });
             }
 
             async function importManifest() {
@@ -1679,7 +1702,7 @@ app.registerExtension({
                     for (const it of manifest.plugins) byName[(it.name || "").trim()] = it;
                     for (const r of rows) r._manifest = byName[r.name] || {};
 
-                    openImportDiffModal(rows);
+                    openImportDiffModal(rows, manifest.settings);
                 };
                 input.click();
             }
@@ -1692,7 +1715,7 @@ app.registerExtension({
                 conflict: { cls: "em-badge-red",    text: "冲突"   },
             };
 
-            function openImportDiffModal(rows) {
+            function openImportDiffModal(rows, settingsPayload) {
                 const overlay = document.createElement("div");
                 overlay.className = "em-dialog-overlay";
                 overlay.style.zIndex = "10000";
@@ -1739,6 +1762,9 @@ app.registerExtension({
                     <label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;border-left:1px solid #3a3a3a;padding-left:14px;">
                         <input type="checkbox" class="em-imp-pin" style="cursor:pointer;margin:0;"> 新装锁定清单版本
                     </label>
+                    <label class="em-imp-settings-label" style="display:flex;align-items:center;gap:6px;cursor:${settingsPayload ? "pointer" : "not-allowed"};user-select:none;border-left:1px solid #3a3a3a;padding-left:14px;color:${settingsPayload ? "#ccc" : "#666"};" title="${settingsPayload ? "导入清单内的 comfy.settings.json（界面/插件前端设置），合并写入当前设置" : "此清单不含设置"}">
+                        <input type="checkbox" class="em-imp-settings" style="cursor:${settingsPayload ? "pointer" : "not-allowed"};margin:0;" ${settingsPayload ? "" : "disabled"}> 同时恢复界面/插件设置
+                    </label>
                     <span class="em-imp-count" style="margin-left:auto;color:#888;"></span>
                     <button class="em-btn em-btn-sm em-btn-primary em-imp-go" style="flex:none;padding:0 16px;">开始安装</button>
                 `;
@@ -1771,6 +1797,7 @@ app.registerExtension({
                 const allChk   = toolbar.querySelector(".em-imp-all");
                 const filterEl = toolbar.querySelector(".em-imp-filter");
                 const pinChk   = toolbar.querySelector(".em-imp-pin");
+                const settingsChk = toolbar.querySelector(".em-imp-settings");
                 const countEl  = toolbar.querySelector(".em-imp-count");
                 const goBtn     = toolbar.querySelector(".em-imp-go");
 
@@ -1829,8 +1856,9 @@ app.registerExtension({
                 }
                 function updateCount() {
                     const sel = entries.filter(e => e.chk.checked && !e.chk.disabled).length;
+                    const wantSettings = !!(settingsChk && settingsChk.checked && !settingsChk.disabled);
                     countEl.textContent = `已选 ${sel} / 共 ${entries.length}`;
-                    goBtn.disabled = sel === 0;
+                    goBtn.disabled = sel === 0 && !wantSettings;
                 }
                 function applyFilter() {
                     const vis = new Set(visibleEntries().map(e => e.tr));
@@ -1844,6 +1872,7 @@ app.registerExtension({
                     updateCount();
                 };
                 filterEl.onchange = applyFilter;
+                if (settingsChk) settingsChk.onchange = updateCount;
 
                 // 星标懒加载
                 if (starCells.size) {
@@ -1857,6 +1886,7 @@ app.registerExtension({
                 goBtn.onclick = async () => {
                     const updateMode = (toolbar.querySelector('input[name="em-imp-mode"]:checked') || {}).value || "latest";
                     const pin = pinChk.checked;
+                    const wantSettings = !!(settingsChk && settingsChk.checked && !settingsChk.disabled && settingsPayload);
                     const selected = entries
                         .filter(e => e.chk.checked && !e.chk.disabled)
                         .map(e => {
@@ -1870,53 +1900,71 @@ app.registerExtension({
                                 action:  r.status === "update" ? "update" : "install",
                             };
                         });
-                    if (selected.length === 0) return;
+                    if (selected.length === 0 && !wantSettings) return;
 
                     goBtn.disabled = true;
                     const oldText = goBtn.textContent;
                     goBtn.textContent = "执行中…";
-                    const inProgress = showToast({ type: "info", msg: `正在处理 ${selected.length} 个插件...`, duration: 0 });
-                    try {
-                        const res  = await fetch("/extension_manager/plugins/install_batch", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ plugins: selected, pin, update_mode: updateMode }),
-                        });
-                        const json = await res.json();
-                        inProgress.dismiss();
-                        if (json.status !== "success") {
-                            showToast({ type: "error", msg: "导入失败: " + (json.msg || "未知错误") });
+
+                    // —— 插件安装/更新（无选中则跳过）——
+                    if (selected.length > 0) {
+                        const inProgress = showToast({ type: "info", msg: `正在处理 ${selected.length} 个插件...`, duration: 0 });
+                        try {
+                            const res  = await fetch("/extension_manager/plugins/install_batch", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ plugins: selected, pin, update_mode: updateMode }),
+                            });
+                            const json = await res.json();
+                            inProgress.dismiss();
+                            if (json.status !== "success") {
+                                showToast({ type: "error", msg: "导入失败: " + (json.msg || "未知错误") });
+                                goBtn.disabled = false; goBtn.textContent = oldText;
+                                return;
+                            }
+                            const results = json.results || [];
+                            const counts = { installed: 0, updated: 0, skipped_existing: 0, skipped_conflict: 0, error: 0 };
+                            for (const r of results) {
+                                counts[r.status] = (counts[r.status] || 0) + 1;
+                                if (r.status === "installed" || r.status === "updated") markPendingRestart(r.name);
+                            }
+                            const summary = `已装 ${counts.installed} / 已更新 ${counts.updated} / 跳过 ${counts.skipped_existing} / 冲突 ${counts.skipped_conflict} / 失败 ${counts.error}`;
+                            const toastType = counts.error > 0 ? "warning" : ((counts.installed + counts.updated) > 0 ? "success" : "info");
+                            showToast({ type: toastType, msg: `导入完成: ${summary}`, duration: 8000 });
+
+                            const detailLines = results
+                                .filter(r => r.status === "error" || r.status === "skipped_conflict")
+                                .map(r => `• ${r.name}: ${r.msg || r.status}`);
+                            if (detailLines.length) {
+                                await showCustomDialog({
+                                    title: "导入详情（异常项）",
+                                    contentHTML: `<div style="font-family:monospace;font-size:11px;color:#ccc;white-space:pre-wrap;max-height:300px;overflow:auto;">${_escapeHtml(detailLines.join("\n"))}</div>`,
+                                    buttons: [{ label: "知道了", value: true, primary: true }]
+                                });
+                            }
+                        } catch (e) {
+                            inProgress.dismiss();
+                            showToast({ type: "error", msg: "请求失败: " + e });
                             goBtn.disabled = false; goBtn.textContent = oldText;
                             return;
                         }
-                        const results = json.results || [];
-                        const counts = { installed: 0, updated: 0, skipped_existing: 0, skipped_conflict: 0, error: 0 };
-                        for (const r of results) {
-                            counts[r.status] = (counts[r.status] || 0) + 1;
-                            if (r.status === "installed" || r.status === "updated") markPendingRestart(r.name);
-                        }
-                        const summary = `已装 ${counts.installed} / 已更新 ${counts.updated} / 跳过 ${counts.skipped_existing} / 冲突 ${counts.skipped_conflict} / 失败 ${counts.error}`;
-                        const toastType = counts.error > 0 ? "warning" : ((counts.installed + counts.updated) > 0 ? "success" : "info");
-                        showToast({ type: toastType, msg: `导入完成: ${summary}`, duration: 8000 });
-
-                        const detailLines = results
-                            .filter(r => r.status === "error" || r.status === "skipped_conflict")
-                            .map(r => `• ${r.name}: ${r.msg || r.status}`);
-                        if (detailLines.length) {
-                            await showCustomDialog({
-                                title: "导入详情（异常项）",
-                                contentHTML: `<div style="font-family:monospace;font-size:11px;color:#ccc;white-space:pre-wrap;max-height:300px;overflow:auto;">${_escapeHtml(detailLines.join("\n"))}</div>`,
-                                buttons: [{ label: "知道了", value: true, primary: true }]
-                            });
-                        }
-                        close();
-                        document.removeEventListener("keydown", onKey);
-                        loadPlugins(false);
-                    } catch (e) {
-                        inProgress.dismiss();
-                        showToast({ type: "error", msg: "请求失败: " + e });
-                        goBtn.disabled = false; goBtn.textContent = oldText;
                     }
+
+                    // —— 恢复界面/插件设置（合并写入；失败不影响已完成的插件操作）——
+                    if (wantSettings) {
+                        try {
+                            const cleaned = { ...settingsPayload };
+                            delete cleaned["Comfy.InstalledVersion"];
+                            await api.storeSettings(cleaned);
+                            showToast({ type: "success", msg: "设置已恢复，刷新页面后生效", duration: 8000 });
+                        } catch (e) {
+                            showToast({ type: "error", msg: "设置恢复失败: " + e });
+                        }
+                    }
+
+                    close();
+                    document.removeEventListener("keydown", onKey);
+                    loadPlugins(false);
                 };
 
                 applyFilter();
