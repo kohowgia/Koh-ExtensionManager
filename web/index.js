@@ -1092,6 +1092,8 @@ app.registerExtension({
             }
 
             // —— 立即重启（绕开 ComfyUI-Manager 的 Restart/Stop 按钮状态机 bug）——
+            // 直接命中 /manager/reboot，不进 Manager 的 restartOrStop()，
+            // 因此不会触发 queue/reset 的 "Remaining tasks will stop..." 误报。
             async function rebootComfyUI() {
                 const ok = await showConfirm({
                     title: "立即重启 ComfyUI?",
@@ -1101,16 +1103,55 @@ app.registerExtension({
                     danger: true,
                 });
                 if (!ok) return;
+
+                // Electron 桌面版：走 IPC，不走 HTTP
+                if (window.electronAPI && typeof window.electronAPI.restartApp === "function") {
+                    showToast({ type: "info", msg: "正在重启 ComfyUI（桌面端）..." });
+                    window.electronAPI.restartApp();
+                    return;
+                }
+
                 showToast({
                     type: "info",
                     msg: "正在重启 ComfyUI...\n服务恢复后请刷新页面（Ctrl+Shift+R）。",
                     duration: 10000,
                 });
+
+                // 优先用 Comfy 的 api 客户端：自动处理反代/子路径前缀
+                const apiFetch = (window.comfyAPI?.api?.api?.fetchApi) || ((u, o) => fetch(u, o));
+
+                let res;
                 try {
-                    await fetch("/manager/reboot", { method: "POST" });
+                    res = await apiFetch("/manager/reboot", { method: "POST" });
                 } catch (_) {
-                    // 重启后连接断开是正常的
+                    // 连接断开 = 进程已退出 = 重启正在发生（正常路径）
+                    return;
                 }
+
+                // 走到这里说明请求"被正常回应了"——进程没退出，说明没真的重启
+                if (res.status === 403) {
+                    showToast({
+                        type: "error",
+                        duration: 10000,
+                        msg: "重启被拒（HTTP 403）。请检查 ComfyUI-Manager/config.ini 的 security_level，需为 normal 或更低。",
+                    });
+                    return;
+                }
+                if (!res.ok) {
+                    const body = await res.text().catch(() => "");
+                    showToast({
+                        type: "error",
+                        duration: 10000,
+                        msg: `重启失败（HTTP ${res.status}）。${body.slice(0, 200)}`,
+                    });
+                    return;
+                }
+                // 200 但连接没断：CLI 模式只 exit 了，外部 watcher 未接管，或 execv 静默失败
+                showToast({
+                    type: "warning",
+                    duration: 10000,
+                    msg: "已请求重启但进程未退出。Docker 环境请确认 restart 策略为 unless-stopped/always。",
+                });
             }
 
             // —— 工具函数 ——

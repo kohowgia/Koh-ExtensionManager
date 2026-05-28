@@ -1,0 +1,7 @@
+# 运行时产物
+__pycache__/
+*.pyc
+*.pyo
+
+# GitHub 元数据缓存（运行时生成，每台机器不同，含时间戳）
+.github_cache.json
