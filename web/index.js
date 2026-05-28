@@ -1118,12 +1118,27 @@ app.registerExtension({
                     duration: 10000,
                 });
 
-                // 直接打 /manager/reboot —— ComfyUI-Manager 注册的真实路径，必然接受 POST
+                // 直接打 /manager/reboot —— ComfyUI-Manager 注册的真实路径
                 // 不走 api.fetchApi（会加 /api/ 前缀）：ComfyUI 把自定义节点路由复制到 /api/ 下
                 // 是标准行为，但跨版本组合下 POST 方法可能没被复制（症状：HTTP 405 Method Not Allowed）
+                //
+                // 旧版 Manager（2026-04-22 之前，commit 491f847b 加固之前）reboot 是 GET 而非 POST
+                // —— 遇到 405 + Allow 含 GET 时自动 fallback 到 GET，兼容新旧两种 Manager
+                async function _hitReboot() {
+                    const r = await fetch("/manager/reboot", { method: "POST" });
+                    if (r.status === 405) {
+                        const allow = (r.headers.get("Allow") || "").toUpperCase();
+                        if (allow.includes("GET")) {
+                            console.info("[Koh-ExtensionManager] reboot endpoint accepts GET only (old Manager), retrying with GET");
+                            return await fetch("/manager/reboot", { method: "GET" });
+                        }
+                    }
+                    return r;
+                }
+
                 let res;
                 try {
-                    res = await fetch("/manager/reboot", { method: "POST" });
+                    res = await _hitReboot();
                 } catch (e) {
                     // 连接断开 = 进程已退出 = 重启正在发生（正常路径）
                     // 但也可能是前端 bug，打 warn 留痕便于诊断
