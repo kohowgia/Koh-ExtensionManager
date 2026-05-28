@@ -1118,19 +1118,15 @@ app.registerExtension({
                     duration: 10000,
                 });
 
-                // 优先用 Comfy 的 api 客户端：自动处理反代/子路径前缀
-                // 注意：必须用箭头函数包装保留 this，直接取 fetchApi 出来会丢 this 抛 TypeError
-                const apiObj = window.comfyAPI?.api?.api;
-                const apiFetch = (apiObj && typeof apiObj.fetchApi === "function")
-                    ? (u, o) => apiObj.fetchApi(u, o)
-                    : (u, o) => fetch(u, o);
-
+                // 直接打 /manager/reboot —— ComfyUI-Manager 注册的真实路径，必然接受 POST
+                // 不走 api.fetchApi（会加 /api/ 前缀）：ComfyUI 把自定义节点路由复制到 /api/ 下
+                // 是标准行为，但跨版本组合下 POST 方法可能没被复制（症状：HTTP 405 Method Not Allowed）
                 let res;
                 try {
-                    res = await apiFetch("/manager/reboot", { method: "POST" });
+                    res = await fetch("/manager/reboot", { method: "POST" });
                 } catch (e) {
                     // 连接断开 = 进程已退出 = 重启正在发生（正常路径）
-                    // 但也可能是前端 bug（如方法 unbind 抛 TypeError），打 warn 留痕便于诊断
+                    // 但也可能是前端 bug，打 warn 留痕便于诊断
                     console.warn("[Koh-ExtensionManager] reboot fetch threw:", e);
                     return;
                 }
