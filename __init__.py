@@ -779,6 +779,49 @@ async def plugin_install_batch(request):
         return web.json_response({"status": "error", "msg": str(e)}, status=500)
 
 
+@routes.post("/extension_manager/plugins/uninstall_batch")
+async def plugin_uninstall_batch(request):
+    """批量卸载（清单导入"对齐到清单"场景使用）。
+
+    入参：{"names": ["pluginA", "pluginB.disabled", ...]}
+    返回：{"status": "success", "results": [{name, status: removed|skipped|error, msg}]}
+    """
+    try:
+        data  = await request.json()
+        names = data.get("names", [])
+        if not isinstance(names, list) or not names:
+            return web.json_response({"status": "error", "msg": "Empty names list"}, status=400)
+
+        nodes_dir   = _get_custom_nodes_dir()
+        nodes_root  = os.path.normpath(nodes_dir)
+        loop        = asyncio.get_event_loop()
+
+        def remove_one(name):
+            name = (name or "").strip()
+            if not name:
+                return {"name": name, "status": "error", "msg": "empty name"}
+            # 路径安全：禁止分隔符与父级引用
+            if any(ch in name for ch in ["/", "\\", ".."]):
+                return {"name": name, "status": "error", "msg": "invalid name"}
+            target = os.path.normpath(os.path.join(nodes_dir, name))
+            if not target.startswith(nodes_root + os.sep):
+                return {"name": name, "status": "error", "msg": "invalid path"}
+            if not os.path.isdir(target):
+                return {"name": name, "status": "skipped", "msg": "not found"}
+            try:
+                shutil.rmtree(target)
+                return {"name": name, "status": "removed"}
+            except Exception as ex:
+                return {"name": name, "status": "error", "msg": str(ex)[:200]}
+
+        results = await loop.run_in_executor(
+            None, lambda: [remove_one(n) for n in names]
+        )
+        return web.json_response({"status": "success", "results": results})
+    except Exception as e:
+        return web.json_response({"status": "error", "msg": str(e)}, status=500)
+
+
 # ================ GitHub 星标 / 作者 ================
 
 @routes.post("/extension_manager/plugins/github_meta")
@@ -890,7 +933,10 @@ async def plugin_check_one(request):
 
 @routes.post("/extension_manager/plugins/manifest_diff")
 async def plugins_manifest_diff(request):
-    """对清单逐项与本地对比 → new | update | same | conflict。"""
+    """对清单逐项与本地对比 → new | update | same | conflict | extra。
+
+    extra: 本机有但清单未包含的 git 插件（用于"对齐到清单"场景的可选卸载）。
+    """
     try:
         data    = await request.json()
         plugins = data.get("plugins", [])
@@ -953,7 +999,66 @@ async def plugins_manifest_diff(request):
             base["status"] = "same" if same else "update"
             return base
 
-        results = await loop.run_in_executor(None, lambda: [diff_one(it) for it in plugins])
+        def scan_extras(manifest_items):
+            """扫本机所有 git 插件，剔除清单已覆盖的（按 name + remote 双重匹配）。
+
+            匹配规则：清单项的 name 与本地目录名一致 OR remote 规范化后一致。
+            目的：清单里改过 name 但 remote 不变时不会误报为 extra。
+            """
+            # 清单里出现过的 name（含 .disabled 兼容）与规范化 remote
+            covered_names   = set()
+            covered_remotes = set()
+            for it in manifest_items:
+                n = (it.get("name") or "").strip()
+                r = (it.get("remote") or "").strip()
+                if n:
+                    covered_names.add(n)
+                    covered_names.add(n + ".disabled")
+                if r:
+                    covered_remotes.add(_normalize_remote(r))
+
+            extras = []
+            try:
+                entries = [e for e in os.scandir(nodes_dir)
+                           if e.is_dir() and not e.name.startswith(".")]
+            except Exception:
+                return extras
+
+            for e in entries:
+                local_name = e.name
+                if local_name in covered_names:
+                    continue
+                # 仅处理 git 仓库（非 git 目录如 __pycache__/example_node 不参与）
+                if not os.path.isdir(os.path.join(e.path, ".git")):
+                    continue
+
+                code, local_remote, _ = _run_git(e.path, "remote", "get-url", "origin")
+                local_remote = local_remote if code == 0 else ""
+                if local_remote and _normalize_remote(local_remote) in covered_remotes:
+                    continue  # remote 一致：清单覆盖了，但目录被改名 → 不算 extra
+
+                code, local_commit, _ = _run_git(e.path, "rev-parse", "--short", "HEAD")
+                local_commit = local_commit if code == 0 else ""
+
+                owner, _repo = _parse_github(local_remote)
+                display_name = local_name[:-9] if local_name.endswith(".disabled") else local_name
+                extras.append({
+                    "name": local_name,
+                    "display_name": display_name,
+                    "remote": local_remote,
+                    "manifest_commit": "", "manifest_branch": "",
+                    "author": owner, "installed": True,
+                    "local_commit": local_commit, "local_remote": local_remote,
+                    "status": "extra",
+                })
+            return extras
+
+        def build_results():
+            rows = [diff_one(it) for it in plugins]
+            rows.extend(scan_extras(plugins))
+            return rows
+
+        results = await loop.run_in_executor(None, build_results)
         return web.json_response({"status": "success", "results": results})
     except Exception as e:
         return web.json_response({"status": "error", "msg": str(e)}, status=500)

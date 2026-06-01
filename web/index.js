@@ -915,6 +915,7 @@ app.registerExtension({
                 <div class="em-plugin-thead-wrap">
                     <table class="em-plugin-table" id="em-plugin-thead-table">
                         <colgroup>
+                            <col data-col-key="index"   style="width:50px;">
                             <col data-col-key="enabled" style="width:40px;">
                             <col data-col-key="name"    style="width:200px;">
                             <col data-col-key="author"  style="width:110px;">
@@ -928,6 +929,7 @@ app.registerExtension({
                         </colgroup>
                         <thead>
                             <tr>
+                                <th data-col-key="index" style="text-align:center;">序号</th>
                                 <th data-col-key="enabled" style="text-align:center;">启用</th>
                                 <th data-col-key="name">插件名</th>
                                 <th data-col-key="author">作者</th>
@@ -945,6 +947,7 @@ app.registerExtension({
                 <div class="em-plugin-scroll">
                     <table class="em-plugin-table" id="em-plugin-tbody-table">
                         <colgroup>
+                            <col data-col-key="index"   style="width:50px;">
                             <col data-col-key="enabled" style="width:40px;">
                             <col data-col-key="name"    style="width:200px;">
                             <col data-col-key="author"  style="width:110px;">
@@ -976,10 +979,10 @@ app.registerExtension({
             const pendingCount  = container.querySelector("#em-pending-count");
 
             _setupResizableTable(headerWrap, scrollWrap, "em_plugin_col_widths_v3");
-            const _PLUGIN_COL_ORDER = ["enabled","name","author","stars","remote","branch","commit","date","status","actions"];
+            const _PLUGIN_COL_ORDER = ["index","enabled","name","author","stars","remote","branch","commit","date","status","actions"];
             const _reorder = _setupColumnReorder(
                 headerWrap, scrollWrap, tbody,
-                _PLUGIN_COL_ORDER, "em_plugin_col_order_v1"
+                _PLUGIN_COL_ORDER, "em_plugin_col_order_v2"
             );
 
             // —— 列排序：三态循环（none → asc → desc → none）——
@@ -1380,13 +1383,15 @@ app.registerExtension({
 
                 tbody.innerHTML = "";
                 if (ordered.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:24px;color:#666;">${term ? "无匹配插件" : "暂无插件"}</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:24px;color:#666;">${term ? "无匹配插件" : "暂无插件"}</td></tr>`;
                     _updateSortIndicators();
                     return;
                 }
 
                 const _starRows = [];  // { remote, cell }
+                let _rowIndex = 0;
                 for (const p of ordered) {
+                    _rowIndex++;
                     const tr = document.createElement("tr");
                     if (!p.enabled) tr.style.opacity = "0.5";
                     const displayName = p.display_name || p.name;
@@ -1395,6 +1400,7 @@ app.registerExtension({
                     const author = gh ? gh.owner : "-";
 
                     tr.innerHTML = `
+                        <td data-col-key="index" style="text-align:center;color:#888;">${_rowIndex}</td>
                         <td data-col-key="enabled" style="text-align:center;"></td>
                         <td data-col-key="name" class="em-plugin-name" title="${_escapeHtml(p.name)}">
                             ${_escapeHtml(displayName)}${isPending ? '<span class="em-pending-dot" title="待重启生效"></span>' : ''}
@@ -1494,7 +1500,7 @@ app.registerExtension({
             }
 
             async function loadPlugins(checkUpdate) {
-                tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:24px;color:#666;">${checkUpdate ? "正在检查更新，请稍候…" : "加载中…"}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:24px;color:#666;">${checkUpdate ? "正在检查更新，请稍候…" : "加载中…"}</td></tr>`;
                 [btnRefresh, btnCheck, btnUpdateAll].forEach(b => b.disabled = true);
                 try {
                     const res = await fetch(`/extension_manager/plugins/list?check_update=${checkUpdate ? "1" : "0"}`);
@@ -1502,7 +1508,7 @@ app.registerExtension({
                     _lastPluginList = plugins;
                     renderTable(plugins);
                 } catch (e) {
-                    tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:#f66;">加载失败: ${_escapeHtml(String(e))}</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;color:#f66;">加载失败: ${_escapeHtml(String(e))}</td></tr>`;
                 } finally {
                     [btnRefresh, btnCheck, btnUpdateAll].forEach(b => b.disabled = false);
                 }
@@ -1787,6 +1793,7 @@ app.registerExtension({
                 update:   { cls: "em-badge-yellow", text: "可更新" },
                 same:     { cls: "em-badge-green",  text: "已最新" },
                 conflict: { cls: "em-badge-red",    text: "冲突"   },
+                extra:    { cls: "em-badge-red",    text: "本机独有" },
             };
 
             function openImportDiffModal(rows, settingsPayload, manifestComfyui) {
@@ -1840,7 +1847,7 @@ app.registerExtension({
                         <input type="checkbox" class="em-imp-settings" style="cursor:${settingsPayload ? "pointer" : "not-allowed"};margin:0;" ${settingsPayload ? "" : "disabled"}> 同时恢复界面/插件设置
                     </label>
                     <span class="em-imp-count" style="margin-left:auto;color:#888;"></span>
-                    <button class="em-btn em-btn-sm em-btn-primary em-imp-go" style="flex:none;padding:0 16px;">开始安装</button>
+                    <button class="em-btn em-btn-sm em-btn-primary em-imp-go" style="flex:none;padding:0 16px;">开始执行</button>
                 `;
 
                 // ComfyUI 版本对比条：仅当清单含 comfyui 字段时显示
@@ -1932,10 +1939,12 @@ app.registerExtension({
                     const meta   = _IMPORT_STATUS[r.status] || _IMPORT_STATUS.conflict;
                     const gh     = _parseGithub(r.remote);
                     const author = r.author || (gh ? gh.owner : "-");
-                    const selectable = r.status === "new" || r.status === "update";
-                    const verText = r.installed
-                        ? `${_escapeHtml(r.local_commit || "?")} → ${_escapeHtml(r.manifest_commit || "?")}`
-                        : `<span style="color:#6ab;">${_escapeHtml(r.manifest_commit || "新装")}</span>`;
+                    const selectable = r.status === "new" || r.status === "update" || r.status === "extra";
+                    const verText = r.status === "extra"
+                        ? `<span style="color:#e88;">${_escapeHtml(r.local_commit || "本机独有")}</span>`
+                        : r.installed
+                            ? `${_escapeHtml(r.local_commit || "?")} → ${_escapeHtml(r.manifest_commit || "?")}`
+                            : `<span style="color:#6ab;">${_escapeHtml(r.manifest_commit || "新装")}</span>`;
 
                     const tr = document.createElement("tr");
                     tr.dataset.status = r.status;
@@ -1953,7 +1962,7 @@ app.registerExtension({
                     chk.type = "checkbox";
                     chk.style.cursor = selectable ? "pointer" : "not-allowed";
                     chk.disabled = !selectable;
-                    chk.checked  = selectable;  // new/update 默认勾选
+                    chk.checked  = selectable && r.status !== "extra";  // new/update 默认勾选；本机独有默认不卸载
                     chk.onchange = updateCount;
                     tr.querySelector("td:first-child").appendChild(chk);
 
@@ -1972,9 +1981,12 @@ app.registerExtension({
                     return entries.filter(e => f === "all" || e.row.status === f);
                 }
                 function updateCount() {
-                    const sel = entries.filter(e => e.chk.checked && !e.chk.disabled).length;
+                    const installSel = entries.filter(e => e.chk.checked && !e.chk.disabled && e.row.status !== "extra").length;
+                    const removeSel  = entries.filter(e => e.chk.checked && !e.chk.disabled && e.row.status === "extra").length;
+                    const sel = installSel + removeSel;
                     const wantSettings = !!(settingsChk && settingsChk.checked && !settingsChk.disabled);
-                    countEl.textContent = `已选 ${sel} / 共 ${entries.length}`;
+                    const actionText = removeSel ? `安装/更新 ${installSel}，卸载 ${removeSel}` : `已选 ${sel}`;
+                    countEl.textContent = `${actionText} / 共 ${entries.length}`;
                     goBtn.disabled = sel === 0 && !wantSettings;
                 }
                 function applyFilter() {
@@ -2005,7 +2017,7 @@ app.registerExtension({
                     const pin = pinChk.checked;
                     const wantSettings = !!(settingsChk && settingsChk.checked && !settingsChk.disabled && settingsPayload);
                     const selected = entries
-                        .filter(e => e.chk.checked && !e.chk.disabled)
+                        .filter(e => e.chk.checked && !e.chk.disabled && e.row.status !== "extra")
                         .map(e => {
                             const r = e.row, m = r._manifest || {};
                             return {
@@ -2017,7 +2029,10 @@ app.registerExtension({
                                 action:  r.status === "update" ? "update" : "install",
                             };
                         });
-                    if (selected.length === 0 && !wantSettings) {
+                    const extrasToRemove = entries
+                        .filter(e => e.chk.checked && !e.chk.disabled && e.row.status === "extra")
+                        .map(e => e.row.name);
+                    if (selected.length === 0 && extrasToRemove.length === 0 && !wantSettings) {
                         // 仍允许"仅切换 ComfyUI 版本"通过
                         const switchChkEarly = comfyBar.querySelector(".em-imp-switch-comfy");
                         const wantSwitchEarly = !!(switchChkEarly && switchChkEarly.checked && !switchChkEarly.disabled);
@@ -2028,6 +2043,61 @@ app.registerExtension({
                     const oldText = goBtn.textContent;
                     goBtn.textContent = "执行中…";
 
+                    // —— 本机独有插件卸载（默认不勾，用户显式勾选才执行）——
+                    if (extrasToRemove.length > 0) {
+                        const ok = await showCustomDialog({
+                            title: "确认卸载本机独有插件",
+                            contentHTML: `<div style="font-size:12px;color:#ccc;line-height:1.7;">这些插件存在于本机，但不在导入清单中。确认后会删除对应插件目录。<br><br><div style="font-family:monospace;font-size:11px;color:#e8b;white-space:pre-wrap;max-height:220px;overflow:auto;">${_escapeHtml(extrasToRemove.join("\n"))}</div></div>`,
+                            buttons: [
+                                { label: "取消", value: false },
+                                { label: "确认卸载", value: true, danger: true },
+                            ]
+                        });
+                        if (!ok) {
+                            goBtn.disabled = false; goBtn.textContent = oldText;
+                            return;
+                        }
+
+                        const inProgress = showToast({ type: "info", msg: `正在卸载 ${extrasToRemove.length} 个本机独有插件...`, duration: 0 });
+                        try {
+                            const res = await fetch("/extension_manager/plugins/uninstall_batch", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ names: extrasToRemove }),
+                            });
+                            const json = await res.json();
+                            inProgress.dismiss();
+                            if (json.status !== "success") {
+                                showToast({ type: "error", msg: "卸载失败: " + (json.msg || "未知错误") });
+                                goBtn.disabled = false; goBtn.textContent = oldText;
+                                return;
+                            }
+                            const results = json.results || [];
+                            const counts = { removed: 0, skipped: 0, error: 0 };
+                            for (const r of results) {
+                                counts[r.status] = (counts[r.status] || 0) + 1;
+                                if (r.status === "removed") markPendingRestart(r.name);
+                            }
+                            const toastType = counts.error > 0 ? "warning" : "success";
+                            showToast({ type: toastType, msg: `本机独有插件处理完成: 已卸载 ${counts.removed} / 跳过 ${counts.skipped} / 失败 ${counts.error}`, duration: 8000 });
+
+                            const detailLines = results
+                                .filter(r => r.status === "error")
+                                .map(r => `• ${r.name}: ${r.msg || r.status}`);
+                            if (detailLines.length) {
+                                await showCustomDialog({
+                                    title: "卸载详情（异常项）",
+                                    contentHTML: `<div style="font-family:monospace;font-size:11px;color:#ccc;white-space:pre-wrap;max-height:300px;overflow:auto;">${_escapeHtml(detailLines.join("\n"))}</div>`,
+                                    buttons: [{ label: "知道了", value: true, primary: true }]
+                                });
+                            }
+                        } catch (e) {
+                            inProgress.dismiss();
+                            showToast({ type: "error", msg: "卸载请求失败: " + e });
+                            goBtn.disabled = false; goBtn.textContent = oldText;
+                            return;
+                        }
+                    }
                     // —— 插件安装/更新（无选中则跳过）——
                     if (selected.length > 0) {
                         const inProgress = showToast({ type: "info", msg: `正在处理 ${selected.length} 个插件...`, duration: 0 });
