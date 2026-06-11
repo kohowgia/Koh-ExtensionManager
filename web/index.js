@@ -1239,11 +1239,12 @@ app.registerExtension({
                     if (json.status === "success") {
                         const output = (json.output || "").trim();
                         const noChange = !output || _NO_CHANGE_RE.test(output);
+                        const stashMsg = json.stashed ? `，已自动暂存 ${((json.dirty_files || []).length)} 个本地改动` : "";
                         if (noChange) {
-                            showToast({ type: "info", msg: `${p.display_name || p.name} 已是最新` });
+                            showToast({ type: "info", msg: `${p.display_name || p.name} 已是最新${stashMsg}` });
                         } else {
                             markPendingRestart(p.display_name || p.name);
-                            showToast({ type: "success", msg: `${p.display_name || p.name} 已更新` });
+                            showToast({ type: "success", msg: `${p.display_name || p.name} 已更新${stashMsg}` });
                         }
                         loadPlugins(false);
                     } else {
@@ -2116,17 +2117,22 @@ app.registerExtension({
                             }
                             const results = json.results || [];
                             const counts = { installed: 0, updated: 0, skipped_existing: 0, skipped_conflict: 0, error: 0 };
+                            const stashed = results.filter(r => r.stashed);
                             for (const r of results) {
                                 counts[r.status] = (counts[r.status] || 0) + 1;
                                 if (r.status === "installed" || r.status === "updated") markPendingRestart(r.name);
                             }
-                            const summary = `已装 ${counts.installed} / 已更新 ${counts.updated} / 跳过 ${counts.skipped_existing} / 冲突 ${counts.skipped_conflict} / 失败 ${counts.error}`;
+                            const stashPart = stashed.length ? ` / 自动暂存 ${stashed.length}` : "";
+                            const summary = `已装 ${counts.installed} / 已更新 ${counts.updated}${stashPart} / 跳过 ${counts.skipped_existing} / 冲突 ${counts.skipped_conflict} / 失败 ${counts.error}`;
                             const toastType = counts.error > 0 ? "warning" : ((counts.installed + counts.updated) > 0 ? "success" : "info");
                             showToast({ type: toastType, msg: `导入完成: ${summary}`, duration: 8000 });
 
                             const detailLines = results
                                 .filter(r => r.status === "error" || r.status === "skipped_conflict")
                                 .map(r => `• ${r.name}: ${r.msg || r.status}`);
+                            for (const r of stashed) {
+                                detailLines.push(`• ${r.name}: 已自动暂存 ${(r.dirty_files || []).length} 个本地改动到 ${r.stash_ref || "stash"}`);
+                            }
                             if (detailLines.length) {
                                 await showCustomDialog({
                                     title: "导入详情（异常项）",

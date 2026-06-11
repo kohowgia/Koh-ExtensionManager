@@ -168,6 +168,68 @@ def _run_git(cwd, *args, timeout=30):
     except Exception as e:
         return -1, "", str(e)
 
+def _git_dirty_files(plugin_dir):
+    code, stdout, stderr = _run_git(plugin_dir, "status", "--porcelain", timeout=30)
+    if code != 0:
+        return None, stderr or stdout or "git status failed"
+
+    files = []
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        path = line[3:].strip() if len(line) > 3 else line.strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        files.append(path)
+    return files, ""
+
+def _stash_if_dirty(plugin_dir, reason):
+    files, error = _git_dirty_files(plugin_dir)
+    if files is None:
+        return False, [], "", error
+    if not files:
+        return False, [], "", ""
+
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    msg = f"Koh-ExtensionManager auto-stash before {reason} at {ts}"
+    code, stdout, stderr = _run_git(plugin_dir, "stash", "push", "-u", "-m", msg, timeout=60)
+    if code != 0:
+        return False, files, "", stderr or stdout or "git stash failed"
+
+    stash_ref = ""
+    code, stash_out, _ = _run_git(plugin_dir, "stash", "list", "-1", "--pretty=%gd", timeout=30)
+    if code == 0:
+        stash_ref = stash_out.strip()
+    return True, files, stash_ref, ""
+
+def _git_pull_ff_with_autostash(plugin_dir, reason="update"):
+    stashed, dirty_files, stash_ref, error = _stash_if_dirty(plugin_dir, reason)
+    meta = {"stashed": stashed, "dirty_files": dirty_files, "stash_ref": stash_ref}
+    if error:
+        return -1, "", error, meta
+
+    code, stdout, stderr = _run_git(plugin_dir, "pull", "--ff-only", timeout=60)
+    return code, stdout, stderr, meta
+
+def _git_checkout_with_autostash(plugin_dir, commit, reason="manifest checkout"):
+    stashed, dirty_files, stash_ref, error = _stash_if_dirty(plugin_dir, reason)
+    meta = {"stashed": stashed, "dirty_files": dirty_files, "stash_ref": stash_ref}
+    if error:
+        return -1, "", error, meta
+
+    code, stdout, stderr = _run_git(plugin_dir, "checkout", commit, timeout=30)
+    return code, stdout, stderr, meta
+
+def _format_update_output(stdout, meta):
+    parts = []
+    if meta.get("stashed"):
+        files = meta.get("dirty_files") or []
+        stash_ref = meta.get("stash_ref") or "stash"
+        parts.append(f"Auto-stashed {len(files)} local change(s) to {stash_ref}.")
+    if stdout:
+        parts.append(stdout)
+    return "\n".join(parts).strip()
+
 def _get_plugin_info(plugin_dir, check_update=False):
     name = os.path.basename(plugin_dir)
     enabled = not name.endswith(".disabled")
@@ -388,12 +450,12 @@ async def plugin_update(request):
             return web.json_response({"status": "error", "msg": "Plugin not found"}, status=404)
 
         loop = asyncio.get_event_loop()
-        code, stdout, stderr = await loop.run_in_executor(
-            None, lambda: _run_git(plugin_dir, "pull", "--ff-only", timeout=60)
+        code, stdout, stderr, meta = await loop.run_in_executor(
+            None, lambda: _git_pull_ff_with_autostash(plugin_dir, reason=f"update {name}")
         )
         if code != 0:
-            return web.json_response({"status": "error", "msg": stderr or stdout}, status=500)
-        return web.json_response({"status": "success", "output": stdout})
+            return web.json_response({"status": "error", "msg": stderr or stdout, **meta}, status=500)
+        return web.json_response({"status": "success", "output": _format_update_output(stdout, meta), **meta})
     except Exception as e:
         return web.json_response({"status": "error", "msg": str(e)}, status=500)
 
@@ -411,13 +473,15 @@ async def plugin_update_all(request):
     async def pull_one(plugin_dir):
         if not os.path.isdir(os.path.join(plugin_dir, ".git")):
             return None
-        code, stdout, stderr = await loop.run_in_executor(
-            None, lambda d=plugin_dir: _run_git(d, "pull", "--ff-only", timeout=60)
+        name = os.path.basename(plugin_dir)
+        code, stdout, stderr, meta = await loop.run_in_executor(
+            None, lambda d=plugin_dir, n=name: _git_pull_ff_with_autostash(d, reason=f"update_all {n}")
         )
         return {
-            "name": os.path.basename(plugin_dir),
+            "name": name,
             "status": "success" if code == 0 else "error",
-            "output": stdout if code == 0 else (stderr or stdout)
+            "output": _format_update_output(stdout, meta) if code == 0 else (stderr or stdout),
+            **meta,
         }
 
     tasks = [pull_one(e.path) for e in entries]
@@ -734,15 +798,21 @@ def _update_one_from_manifest(nodes_dir, item, update_mode):
         code, _, stderr = _run_git(plugin_dir, "fetch", "origin", timeout=60)
         if code != 0:
             return {"name": name, "status": "error", "msg": (stderr or "fetch failed")[:200]}
-        code, stdout, stderr = _run_git(plugin_dir, "checkout", commit, timeout=30)
+        code, stdout, stderr, meta = _git_checkout_with_autostash(plugin_dir, commit, reason=f"manifest checkout {name}")
         if code != 0:
-            return {"name": name, "status": "error", "msg": (stderr or stdout or "checkout failed")[:200]}
-        return {"name": name, "status": "updated", "msg": f"已锁定到 {commit}"}
+            return {"name": name, "status": "error", "msg": (stderr or stdout or "checkout failed")[:200], **meta}
+        msg = f"已锁定到 {commit}"
+        if meta.get("stashed"):
+            msg += f"；已自动暂存 {len(meta.get('dirty_files') or [])} 个本地改动"
+        return {"name": name, "status": "updated", "msg": msg, **meta}
 
-    code, stdout, stderr = _run_git(plugin_dir, "pull", "--ff-only", timeout=60)
+    code, stdout, stderr, meta = _git_pull_ff_with_autostash(plugin_dir, reason=f"manifest update {name}")
     if code != 0:
-        return {"name": name, "status": "error", "msg": (stderr or stdout or "pull failed")[:200]}
-    return {"name": name, "status": "updated", "msg": (stdout or "已更新")[:200]}
+        return {"name": name, "status": "error", "msg": (stderr or stdout or "pull failed")[:200], **meta}
+    msg = (stdout or "已更新")[:200]
+    if meta.get("stashed"):
+        msg = f"已自动暂存 {len(meta.get('dirty_files') or [])} 个本地改动；" + msg
+    return {"name": name, "status": "updated", "msg": msg[:240], **meta}
 
 
 @routes.post("/extension_manager/plugins/install_batch")
