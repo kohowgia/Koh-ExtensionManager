@@ -335,6 +335,28 @@ def _post_install_setup(plugin_dir, timeout=600):
     return _post_install_fallback(plugin_dir, timeout=timeout)
 
 
+def _finish_update(plugin_dir):
+    """Code is already switched. Report dependencies separately; never undo,
+    disable or restart an existing plugin when dependency setup fails."""
+    code, commit, _ = _run_git(plugin_dir, "rev-parse", "HEAD")
+    try:
+        ok, log = _post_install_setup(plugin_dir)
+    except Exception as exc:
+        ok, log = False, str(exc)
+    return {
+        "code_status": "success",
+        "actual_commit": commit if code == 0 else "",
+        "dependencies_status": "success" if ok else "failed",
+        "dependencies_log": _tail(log, 6000),
+        "restart_required": True,
+    }
+
+
+def _dependency_summary(stages):
+    return ("代码已更新；依赖处理成功，待重启" if stages["dependencies_status"] == "success"
+            else "代码已更新；依赖处理失败，未回退代码、未禁用插件，请查看依赖日志")
+
+
 def _post_install_fallback(plugin_dir, timeout=600):
     """Manager 不可用时的兜底：自己装 requirements.txt + 跑 install.py。"""
     outputs = ["[fallback] ComfyUI-Manager 不可用，使用内置依赖安装"]
@@ -455,7 +477,10 @@ async def plugin_update(request):
         )
         if code != 0:
             return web.json_response({"status": "error", "msg": stderr or stdout, **meta}, status=500)
-        return web.json_response({"status": "success", "output": _format_update_output(stdout, meta), **meta})
+        stages = await loop.run_in_executor(None, lambda: _finish_update(plugin_dir))
+        ok = stages["dependencies_status"] == "success"
+        return web.json_response({"status": "success" if ok else "error", "msg": _dependency_summary(stages),
+                                  "output": _format_update_output(stdout, meta) + "\n" + _dependency_summary(stages), **meta, **stages})
     except Exception as e:
         return web.json_response({"status": "error", "msg": str(e)}, status=500)
 
@@ -477,15 +502,22 @@ async def plugin_update_all(request):
         code, stdout, stderr, meta = await loop.run_in_executor(
             None, lambda d=plugin_dir, n=name: _git_pull_ff_with_autostash(d, reason=f"update_all {n}")
         )
+        stages = await loop.run_in_executor(None, lambda: _finish_update(plugin_dir)) if code == 0 else {}
         return {
             "name": name,
-            "status": "success" if code == 0 else "error",
+            "status": "success" if code == 0 and stages.get("dependencies_status") == "success" else "error",
+            **stages,
+            "msg": _dependency_summary(stages) if stages else (stderr or stdout),
             "output": _format_update_output(stdout, meta) if code == 0 else (stderr or stdout),
             **meta,
         }
 
-    tasks = [pull_one(e.path) for e in entries]
-    results = [r for r in await asyncio.gather(*tasks) if r is not None]
+    # Dependency installers share one Python environment: serialize updates.
+    results = []
+    for entry in entries:
+        result = await pull_one(entry.path)
+        if result is not None:
+            results.append(result)
     return web.json_response({"status": "success", "results": results})
 
 
@@ -576,7 +608,9 @@ async def plugin_checkout(request):
         )
         if code != 0:
             return web.json_response({"status": "error", "msg": stderr or stdout}, status=500)
-        return web.json_response({"status": "success"})
+        stages = await loop.run_in_executor(None, lambda: _finish_update(plugin_dir))
+        return web.json_response({"status": "success" if stages["dependencies_status"] == "success" else "error",
+                                  "msg": _dependency_summary(stages), **stages})
     except Exception as e:
         return web.json_response({"status": "error", "msg": str(e)}, status=500)
 
@@ -804,7 +838,9 @@ def _update_one_from_manifest(nodes_dir, item, update_mode):
         msg = f"已锁定到 {commit}"
         if meta.get("stashed"):
             msg += f"；已自动暂存 {len(meta.get('dirty_files') or [])} 个本地改动"
-        return {"name": name, "status": "updated", "msg": msg, **meta}
+        stages = _finish_update(plugin_dir)
+        return {"name": name, "status": "updated" if stages["dependencies_status"] == "success" else "error",
+                "msg": msg + "；" + _dependency_summary(stages), **meta, **stages}
 
     code, stdout, stderr, meta = _git_pull_ff_with_autostash(plugin_dir, reason=f"manifest update {name}")
     if code != 0:
@@ -812,7 +848,9 @@ def _update_one_from_manifest(nodes_dir, item, update_mode):
     msg = (stdout or "已更新")[:200]
     if meta.get("stashed"):
         msg = f"已自动暂存 {len(meta.get('dirty_files') or [])} 个本地改动；" + msg
-    return {"name": name, "status": "updated", "msg": msg[:240], **meta}
+    stages = _finish_update(plugin_dir)
+    return {"name": name, "status": "updated" if stages["dependencies_status"] == "success" else "error",
+            "msg": msg[:240] + "；" + _dependency_summary(stages), **meta, **stages}
 
 
 @routes.post("/extension_manager/plugins/install_batch")
