@@ -321,8 +321,20 @@ def _post_install_setup(plugin_dir, timeout=600):
         env = dict(os.environ)
         env["COMFYUI_PATH"] = _comfyui_root()  # 显式指定，避免子进程靠猜
         try:
+            # Some cm-cli releases discard execute_install_script's False
+            # return and exit 0. Invoke the same Manager machinery while
+            # preserving that return value, without patching Manager itself.
+            runner = (
+                "import runpy,sys; "
+                "cli,path=sys.argv[1:3]; sys.argv=[cli]; "
+                "ns=runpy.run_path(cli,run_name='koh_dependency_runner'); "
+                "fixer=ns['manager_util'].PIPFixer(ns['manager_util'].get_installed_packages(),ns['comfy_path'],ns['core'].manager_files_path); "
+                "ok=ns['unified_manager'].execute_install_script('',path,instant_execution=True); "
+                "fixer.fix_broken(); "
+                "sys.exit(0 if ok is True else 1)"
+            )
             r = subprocess.run(
-                [sys.executable, cmcli, "post-install", plugin_dir],
+                [sys.executable, "-c", runner, cmcli, plugin_dir],
                 cwd=mgr, capture_output=True, text=True, timeout=timeout, env=env
             )
             log = f"[cm-cli post-install] rc={r.returncode}\n{_tail(r.stdout)}\n{_tail(r.stderr)}"
