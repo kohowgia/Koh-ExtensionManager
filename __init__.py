@@ -1172,6 +1172,23 @@ async def plugins_manifest_diff(request):
         return web.json_response({"status": "error", "msg": str(e)}, status=500)
 
 
+@routes.get("/extension_manager/environment")
+async def environment_inventory(request):
+    """Read-only installed metadata and pip check in ComfyUI's interpreter."""
+    def collect():
+        import importlib.metadata
+        packages = sorted([{"name": d.metadata.get("Name", ""), "version": d.version}
+                           for d in importlib.metadata.distributions()], key=lambda d: d["name"].lower())
+        try:
+            result = subprocess.run([sys.executable, "-m", "pip", "check"], capture_output=True, text=True, timeout=30)
+            check = {"status": "success" if result.returncode == 0 else "issues", "output": _tail(result.stdout + "\n" + result.stderr, 20000)}
+        except Exception as exc:
+            check = {"status": "unknown", "output": str(exc)}
+        return {"python": sys.version, "executable": sys.executable, "packages": packages, "pip_check": check}
+    loop = asyncio.get_event_loop()
+    return web.json_response(await loop.run_in_executor(None, collect))
+
+
 # ================ ComfyUI 本体版本 ================
 
 @routes.get("/extension_manager/comfyui/version")
