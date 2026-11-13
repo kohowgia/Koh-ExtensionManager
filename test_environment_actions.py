@@ -29,6 +29,11 @@ class EnvironmentTests(unittest.TestCase):
             return SimpleNamespace(returncode=0,stdout='',stderr='')
         with patch.object(actions,'fingerprint',return_value='same'),patch.object(actions,'resolved_versions',return_value={'some-plugin-lib':'1.0'}),patch.object(actions.subprocess,'run',side_effect=dry_run):result=actions.align_plan([{'name':'some-plugin-lib','version':'2.0'}])
         self.assertTrue(result['executable']);self.assertIn('some-plugin-lib==2.0',actions._tickets[result['token']]['specs'])
+    def test_uninstall_plan_reports_consumers(self):
+        with patch.object(actions,'resolved_versions',return_value={'old-lib':'1.0'}),patch.object(actions,'fingerprint',return_value='same'),patch.object(actions,'analyze',return_value={'consumers':[{'name':'Consumer','active':True}]}):
+            result=actions.uninstall_plan([{'name':'old-lib'}])
+        self.assertTrue(result['executable']);self.assertEqual(result['risks'][0]['consumers'][0]['name'],'Consumer')
+
     def test_drift_refuses_without_install(self):
         actions._tickets['drift']={'expires':actions.time.time()+100,'before':'before','specs':['comfy-kitchen==0.2.41']}
         with patch.object(actions,'fingerprint',return_value='after'),patch.object(actions.subprocess,'run') as run:

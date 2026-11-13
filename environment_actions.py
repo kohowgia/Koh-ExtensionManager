@@ -113,6 +113,11 @@ def execute(token):
             raise ValueError('预览已过期，请重新检查')
         if fingerprint() != ticket['before']:
             raise ValueError('依赖环境已变化，请重新预览')
+        if 'uninstall' in ticket:
+            p = subprocess.run([sys.executable, '-m', 'pip', 'uninstall', '-y', '--disable-pip-version-check', *ticket['uninstall']], capture_output=True, text=True, timeout=300)
+            actual = resolved_versions(ticket['uninstall'])
+            verified = all(actual.get(n) is None for n in ticket['uninstall'])
+            return {'status': 'success' if p.returncode == 0 and verified else 'failed', 'message': '包已卸载，需重启后重新检测' if p.returncode == 0 and verified else '卸载失败或版本未核实，请查看日志', 'log': (p.stdout + '\n' + p.stderr)[-10000:], 'restart_required': True}
         # All resolver changes were included and pinned in the confirmation.
         # --no-deps prevents introducing any additional unpreviewed packages.
         p = subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-deps', '--disable-pip-version-check', '--no-input', *ticket['specs']], capture_output=True, text=True, timeout=600)
@@ -160,3 +165,26 @@ def align_plan(items):
         _tickets.clear()
     _tickets[token]={'specs':specs,'before':before,'expires':time.time()+600}
     return {'token':token,'executable':True,'changes':changes,'message':'将目标实例的所选包对齐到参照版本；完整变更均已固定，不会自动重启。'}
+
+
+def uninstall_plan(items):
+    if not isinstance(items, list) or not items or len(items) > 20:
+        raise ValueError('请选择不超过 20 个卸载包')
+    names=[]
+    for item in items:
+        name=canonicalize_name(str(item.get('name','')))
+        if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,150}',name):
+            raise ValueError('卸载包名无效')
+        names.append(name)
+    if len(set(names))!=len(names): raise ValueError('卸载包重复')
+    actual=resolved_versions(names)
+    missing=[n for n in names if actual.get(n) is None]
+    if missing: raise ValueError('以下包未安装：'+', '.join(missing))
+    token=secrets.token_urlsafe(24)
+    if len(_tickets)>100:_tickets.clear()
+    _tickets[token]={'uninstall':names,'before':fingerprint(),'expires':time.time()+600}
+    risks=[]
+    for n in names:
+        consumers=[c for c in analyze(n)['consumers'] if c.get('active')]
+        if consumers: risks.append({'name':n,'consumers':consumers})
+    return {'token':token,'executable':True,'changes':[{'name':n,'installed':actual[n],'action':'uninstall'} for n in names],'risks':risks,'message':'卸载会移除这些 Python 包；不会自动卸载依赖它的插件，也不会自动重启。'}
