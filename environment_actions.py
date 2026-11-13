@@ -62,6 +62,18 @@ def validated_specs(items):
         raise ValueError('重复包名')
     return specs
 
+def resolved_versions(names):
+    """Resolve metadata in a fresh interpreter with ComfyUI's search path.
+    Avoid sorted inventory -> dict, which can select a shadowed old dist-info.
+    This verifies metadata resolution, not already-imported module objects.
+    """
+    script = "import sys,json,importlib.metadata as m; d=json.load(sys.stdin); sys.path[:]=d['paths']; out={};\nfor name in d['names']:\n try: out[name]=m.version(name)\n except m.PackageNotFoundError: out[name]=None\nprint(json.dumps(out))"
+    result = subprocess.run([sys.executable, '-c', script], input=json.dumps({'names': list(names), 'paths': sys.path}), capture_output=True, text=True, timeout=30)
+    if result.returncode:
+        raise ValueError('无法核验安装版本：' + result.stderr[-1000:])
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
 def plan(items):
     specs = validated_specs(items)
     before = fingerprint()
@@ -74,7 +86,7 @@ def plan(items):
             raw = json.load(f)
     if before != fingerprint():
         raise ValueError('检查过程中依赖环境已变化，请重试')
-    installed = dict(inventory())
+    installed = resolved_versions(canonicalize_name(i['metadata']['name']) for i in raw.get('install', []))
     requested = {s.split('==')[0] for s in specs}
     changes = []
     for item in raw.get('install', []):
@@ -104,7 +116,7 @@ def execute(token):
         # All resolver changes were included and pinned in the confirmation.
         # --no-deps prevents introducing any additional unpreviewed packages.
         p = subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-deps', '--disable-pip-version-check', '--no-input', *ticket['specs']], capture_output=True, text=True, timeout=600)
-        actual = dict(inventory())
+        actual = resolved_versions(s.split('==')[0] for s in ticket['specs'])
         verified = all(actual.get(s.split('==')[0]) == s.split('==')[1] for s in ticket['specs'])
         return {'status': 'success' if p.returncode == 0 and verified else 'failed', 'message': '核心包已安装，需重启后重新检测' if p.returncode == 0 and verified else '安装失败或版本未核实，请查看日志', 'log': (p.stdout + '\n' + p.stderr)[-10000:], 'restart_required': True}
     finally:

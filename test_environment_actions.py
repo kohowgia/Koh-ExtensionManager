@@ -10,7 +10,7 @@ class EnvironmentTests(unittest.TestCase):
 
     def test_token_single_use_and_command(self):
         actions._tickets['test']={'expires':actions.time.time()+100,'before':'same','specs':['comfy-kitchen==0.2.41']}
-        with patch.object(actions,'fingerprint',return_value='same'), patch.object(actions,'inventory',return_value=[('comfy-kitchen','0.2.41')]), patch.object(actions.subprocess,'run') as run:
+        with patch.object(actions,'fingerprint',return_value='same'), patch.object(actions,'resolved_versions',return_value={'comfy-kitchen':'0.2.41'}), patch.object(actions.subprocess,'run') as run:
             run.return_value.returncode=0;run.return_value.stdout='';run.return_value.stderr=''
             self.assertEqual(actions.execute('test')['status'],'success')
             self.assertIn('--no-deps',run.call_args.args[0])
@@ -23,7 +23,7 @@ class EnvironmentTests(unittest.TestCase):
                 actions.json.dump({'install': [{'metadata': {'name': 'comfyui_workflow_templates', 'version': '0.11.107'}}, {'metadata': {'name': 'comfyui-workflow-templates-core', 'version': '0.3.398'}}]}, f)
             from types import SimpleNamespace
             return SimpleNamespace(returncode=0, stdout='', stderr='')
-        with patch.object(actions, 'fingerprint', return_value='same'), patch.object(actions, 'inventory', return_value=[('comfyui-workflow-templates', '0.11.106')]), patch.object(actions.subprocess, 'run', side_effect=dry_run):
+        with patch.object(actions, 'fingerprint', return_value='same'), patch.object(actions, 'resolved_versions', return_value={'comfyui-workflow-templates':'0.11.106'}), patch.object(actions.subprocess, 'run', side_effect=dry_run):
             result = actions.plan([{'name': 'comfyui-workflow-templates', 'version': '0.11.107'}])
         self.assertTrue(result['executable'])
         self.assertEqual(result['changes'][0]['installed'], '0.11.106')
