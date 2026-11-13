@@ -10,6 +10,7 @@ import urllib.request
 import urllib.error
 from aiohttp import web
 from server import PromptServer
+from .restart_assessment import assess_restart as _assess_restart
 
 routes = PromptServer.instance.routes
 
@@ -347,20 +348,46 @@ def _post_install_setup(plugin_dir, timeout=600):
     return _post_install_fallback(plugin_dir, timeout=timeout)
 
 
-def _finish_update(plugin_dir):
-    """Code is already switched. Report dependencies separately; never undo,
-    disable or restart an existing plugin when dependency setup fails."""
+def _head_commit(plugin_dir):
     code, commit, _ = _run_git(plugin_dir, "rev-parse", "HEAD")
+    return commit.strip() if code == 0 else ""
+
+
+def _changed_files(plugin_dir, before, after):
+    """Repo-relative paths changed between two commits; None when unknowable."""
+    if not before or not after:
+        return None
+    if before == after:
+        return []
+    code, out, _ = _run_git(plugin_dir, "diff", "--name-only", before, after, timeout=30)
+    if code != 0:
+        return None
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _finish_update(plugin_dir, before_commit=None):
+    """Code is already switched. Report dependencies separately; never undo,
+    disable or restart an existing plugin when dependency setup fails.
+
+    before_commit is the HEAD recorded before the update; with it the response
+    carries the changed files and whether a restart is actually required."""
+    commit = _head_commit(plugin_dir)
     try:
         ok, log = _post_install_setup(plugin_dir)
     except Exception as exc:
         ok, log = False, str(exc)
+    changed = _changed_files(plugin_dir, before_commit, commit) if before_commit is not None else None
+    assessment = _assess_restart(changed)
     return {
         "code_status": "success",
-        "actual_commit": commit if code == 0 else "",
+        "actual_commit": commit,
+        "previous_commit": before_commit or "",
+        "changed_files": (changed or [])[:200] if changed is not None else None,
         "dependencies_status": "success" if ok else "failed",
         "dependencies_log": _tail(log, 6000),
-        "restart_required": True,
+        "restart_required": assessment["level"] == "required",
+        "restart_level": assessment["level"],
+        "restart_reason": assessment["reason"],
     }
 
 
@@ -484,12 +511,13 @@ async def plugin_update(request):
             return web.json_response({"status": "error", "msg": "Plugin not found"}, status=404)
 
         loop = asyncio.get_event_loop()
+        before = await loop.run_in_executor(None, lambda: _head_commit(plugin_dir))
         code, stdout, stderr, meta = await loop.run_in_executor(
             None, lambda: _git_pull_ff_with_autostash(plugin_dir, reason=f"update {name}")
         )
         if code != 0:
             return web.json_response({"status": "error", "msg": stderr or stdout, **meta}, status=500)
-        stages = await loop.run_in_executor(None, lambda: _finish_update(plugin_dir))
+        stages = await loop.run_in_executor(None, lambda: _finish_update(plugin_dir, before))
         ok = stages["dependencies_status"] == "success"
         return web.json_response({"status": "success" if ok else "error", "msg": _dependency_summary(stages),
                                   "output": _format_update_output(stdout, meta) + "\n" + _dependency_summary(stages), **meta, **stages})
@@ -511,10 +539,11 @@ async def plugin_update_all(request):
         if not os.path.isdir(os.path.join(plugin_dir, ".git")):
             return None
         name = os.path.basename(plugin_dir)
+        before = await loop.run_in_executor(None, lambda d=plugin_dir: _head_commit(d))
         code, stdout, stderr, meta = await loop.run_in_executor(
             None, lambda d=plugin_dir, n=name: _git_pull_ff_with_autostash(d, reason=f"update_all {n}")
         )
-        stages = await loop.run_in_executor(None, lambda: _finish_update(plugin_dir)) if code == 0 else {}
+        stages = await loop.run_in_executor(None, lambda: _finish_update(plugin_dir, before)) if code == 0 else {}
         return {
             "name": name,
             "status": "success" if code == 0 and stages.get("dependencies_status") == "success" else "error",
@@ -615,12 +644,13 @@ async def plugin_checkout(request):
             return web.json_response({"status": "error", "msg": "Plugin not found"}, status=404)
 
         loop = asyncio.get_event_loop()
+        before = await loop.run_in_executor(None, lambda: _head_commit(plugin_dir))
         code, stdout, stderr = await loop.run_in_executor(
             None, lambda: _run_git(plugin_dir, "checkout", ref, timeout=30)
         )
         if code != 0:
             return web.json_response({"status": "error", "msg": stderr or stdout}, status=500)
-        stages = await loop.run_in_executor(None, lambda: _finish_update(plugin_dir))
+        stages = await loop.run_in_executor(None, lambda: _finish_update(plugin_dir, before))
         return web.json_response({"status": "success" if stages["dependencies_status"] == "success" else "error",
                                   "msg": _dependency_summary(stages), **stages})
     except Exception as e:
@@ -840,6 +870,7 @@ def _update_one_from_manifest(nodes_dir, item, update_mode):
     if not os.path.isdir(os.path.join(plugin_dir, ".git")):
         return {"name": name, "status": "error", "msg": "非 git 仓库"}
 
+    before = _head_commit(plugin_dir)
     if update_mode == "pin" and commit:
         code, _, stderr = _run_git(plugin_dir, "fetch", "origin", timeout=60)
         if code != 0:
@@ -850,7 +881,7 @@ def _update_one_from_manifest(nodes_dir, item, update_mode):
         msg = f"已锁定到 {commit}"
         if meta.get("stashed"):
             msg += f"；已自动暂存 {len(meta.get('dirty_files') or [])} 个本地改动"
-        stages = _finish_update(plugin_dir)
+        stages = _finish_update(plugin_dir, before)
         return {"name": name, "status": "updated" if stages["dependencies_status"] == "success" else "error",
                 "msg": msg + "；" + _dependency_summary(stages), **meta, **stages}
 
@@ -860,7 +891,7 @@ def _update_one_from_manifest(nodes_dir, item, update_mode):
     msg = (stdout or "已更新")[:200]
     if meta.get("stashed"):
         msg = f"已自动暂存 {len(meta.get('dirty_files') or [])} 个本地改动；" + msg
-    stages = _finish_update(plugin_dir)
+    stages = _finish_update(plugin_dir, before)
     return {"name": name, "status": "updated" if stages["dependencies_status"] == "success" else "error",
             "msg": msg[:240] + "；" + _dependency_summary(stages), **meta, **stages}
 

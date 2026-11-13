@@ -4,7 +4,7 @@ import pathlib
 import unittest
 
 TREE = ast.parse(pathlib.Path(__file__).with_name('__init__.py').read_text(encoding='utf-8'))
-NAMES = {'_finish_update', '_dependency_summary', '_update_one_from_manifest'}
+NAMES = {'_head_commit', '_changed_files', '_finish_update', '_dependency_summary', '_update_one_from_manifest'}
 NS = {}
 exec(compile(ast.Module(body=[n for n in TREE.body if isinstance(n, ast.FunctionDef) and n.name in NAMES], type_ignores=[]), '<helpers>', 'exec'), NS)
 
@@ -13,6 +13,7 @@ class DependenciesTest(unittest.TestCase):
         NS['_run_git'] = lambda *a, **k: (0, 'abcdef123', '')
         NS['_tail'] = lambda value, count: value[-count:]
         NS['_post_install_setup'] = lambda path: (True, 'dependency log')
+        NS['_assess_restart'] = lambda changed: {'level': 'required', 'reason': 'test'}
 
     def test_success(self):
         result = NS['_finish_update']('plugin')
