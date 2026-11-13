@@ -1370,6 +1370,15 @@ async def queue_resume_preview(request):
     except Exception as exc:
         return web.json_response({'error':str(exc)}, status=400)
 
+@routes.post('/extension_manager/queue_resume/release')
+async def queue_resume_release(request):
+    try:
+        data = await request.json()
+        if data.get('confirmReviewed') is not True: raise ValueError('需确认已人工核查任务是否执行')
+        return web.json_response(_queue_resume.release(data.get('snapshotId')))
+    except Exception as exc:
+        return web.json_response({'error':str(exc)}, status=400)
+
 @routes.post('/extension_manager/queue_resume/execute')
 async def queue_resume_execute(request):
     try:
