@@ -1233,6 +1233,16 @@ async def environment_inventory(request):
 
 
 from . import environment_actions as _environment_actions
+from . import dependency_sources as _dependency_sources
+
+
+@routes.get('/extension_manager/environment/sources')
+async def environment_sources(request):
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(None, _dependency_sources.scan, _get_custom_nodes_dir())
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({'error': str(exc)}, status=400)
 
 
 @routes.post('/extension_manager/environment/analyze')
@@ -1323,6 +1333,51 @@ async def self_reboot(request):
     except Exception as e:
         return web.json_response({"status": "error", "msg": str(e)}, status=500)
 
+
+# Planned restart recovery is opt-in; ordinary reboot remains unchanged.
+from .queue_resume import QueueResume as _QueueResume
+import folder_paths as _folder_paths
+import execution as _execution
+import comfy.model_management as _model_management
+
+async def _resume_reboot():
+    response = await self_reboot(None)
+    raise RuntimeError('重启调用返回，进程未退出')
+
+_resume_port = str(getattr(PromptServer.instance, 'port', None) or getattr(__import__('comfy.cli_args', fromlist=['args']).args, 'port', 8188))
+import socket as _resume_socket
+_resume_identity = re.sub(r'[^A-Za-z0-9_.-]', '_', os.environ.get('KOH_QUEUE_INSTANCE_ID') or (_resume_socket.gethostname() + '-' + _resume_port))
+_resume_file = os.path.join(_folder_paths.get_user_directory(), 'koh_queue_resume', _resume_identity, 'snapshot.json')
+_queue_resume = _QueueResume(PromptServer.instance.prompt_queue, _resume_file, lambda: _model_management.interrupt_current_processing(True), _resume_reboot, _execution.validate_prompt)
+PromptServer.instance.app.on_startup.append(_queue_resume.restore)
+
+@web.middleware
+async def _queue_resume_maintenance(request, handler):
+    if _queue_resume.paused and request.method == 'POST' and request.path.rstrip('/') in ('/prompt', '/api/prompt'):
+        return web.json_response({'error':'实例正在保存或恢复重启队列，请稍后提交'}, status=503)
+    return await handler(request)
+
+PromptServer.instance.app.middlewares.append(_queue_resume_maintenance)
+
+@routes.get('/extension_manager/queue_resume/status')
+async def queue_resume_status(request):
+    return web.json_response(_queue_resume.status())
+
+@routes.post('/extension_manager/queue_resume/preview')
+async def queue_resume_preview(request):
+    try:
+        return web.json_response(_queue_resume.preview())
+    except Exception as exc:
+        return web.json_response({'error':str(exc)}, status=400)
+
+@routes.post('/extension_manager/queue_resume/execute')
+async def queue_resume_execute(request):
+    try:
+        data = await request.json()
+        if data.get('confirmReplay') is not True: raise ValueError('需确认运行中任务会从头重跑')
+        return web.json_response(await _queue_resume.execute(data.get('token')))
+    except Exception as exc:
+        return web.json_response({'error':str(exc)}, status=400)
 
 NODE_CLASS_MAPPINGS = {}
 WEB_DIRECTORY = "./web"
