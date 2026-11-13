@@ -121,3 +121,42 @@ def execute(token):
         return {'status': 'success' if p.returncode == 0 and verified else 'failed', 'message': '核心包已安装，需重启后重新检测' if p.returncode == 0 and verified else '安装失败或版本未核实，请查看日志', 'log': (p.stdout + '\n' + p.stderr)[-10000:], 'restart_required': True}
     finally:
         _lock.release()
+
+
+def align_plan(items):
+    """Preview explicit target versions from a trusted same-image reference."""
+    if not isinstance(items, list) or not items or len(items) > 100:
+        raise ValueError('请选择不超过 100 个对齐包')
+    specs=[]
+    for item in items:
+        name=canonicalize_name(str(item.get('name','')))
+        version=str(item.get('version',''))
+        if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,150}',name) or not re.fullmatch(r'[0-9][A-Za-z0-9.!+_-]{0,79}',version):
+            raise ValueError('对齐包名或版本无效')
+        specs.append(name+'=='+version)
+    if len({x.split('==')[0] for x in specs}) != len(specs):
+        raise ValueError('对齐包重复')
+    before=fingerprint()
+    with tempfile.TemporaryDirectory(prefix='koh-pip-align-') as folder:
+        report=os.path.join(folder,'report.json')
+        proc=subprocess.run([sys.executable,'-m','pip','install','--dry-run','--report',report,'--disable-pip-version-check','--no-input',*specs],capture_output=True,text=True,timeout=300)
+        if proc.returncode:
+            raise ValueError((proc.stdout+'\n'+proc.stderr)[-6000:])
+        with open(report,encoding='utf-8') as f:
+            raw=json.load(f)
+    if before != fingerprint():
+        raise ValueError('检查过程中依赖环境已变化，请重试')
+    direct={x.split('==')[0] for x in specs}
+    installed=resolved_versions(canonicalize_name(i['metadata']['name']) for i in raw.get('install',[]))
+    changes=[]
+    for item in raw.get('install',[]):
+        name=canonicalize_name(item['metadata']['name']); version=item['metadata']['version']
+        if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,150}',name) or not re.fullmatch(r'[0-9][A-Za-z0-9.!+_-]{0,79}',version):
+            raise ValueError('对齐方案包含不支持的包')
+        changes.append({'name':name,'version':version,'installed':installed.get(name),'direct':name in direct})
+    specs=list(dict.fromkeys(specs+[c['name']+'=='+c['version'] for c in changes]))
+    token=secrets.token_urlsafe(24)
+    if len(_tickets)>100:
+        _tickets.clear()
+    _tickets[token]={'specs':specs,'before':before,'expires':time.time()+600}
+    return {'token':token,'executable':True,'changes':changes,'message':'将目标实例的所选包对齐到参照版本；完整变更均已固定，不会自动重启。'}

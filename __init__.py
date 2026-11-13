@@ -1265,6 +1265,16 @@ async def environment_plan(request):
         return web.json_response({'error': str(exc)}, status=400)
 
 
+@routes.post('/extension_manager/environment/align-plan')
+async def environment_align_plan(request):
+    try:
+        body = await request.json()
+        result = await asyncio.get_event_loop().run_in_executor(None, _environment_actions.align_plan, body.get('items'))
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({'error': str(exc)}, status=400)
+
+
 @routes.post('/extension_manager/environment/execute')
 async def environment_execute(request):
     try:
