@@ -74,17 +74,23 @@ def plan(items):
             raw = json.load(f)
     if before != fingerprint():
         raise ValueError('检查过程中依赖环境已变化，请重试')
-    changes = [{'name': i['metadata']['name'], 'version': i['metadata']['version']} for i in raw.get('install', [])]
-    # Do not silently include shared dependencies in this first repair release.
-    # A dependency cascade must be handled explicitly in a future planner.
+    installed = dict(inventory())
     requested = {s.split('==')[0] for s in specs}
-    if any(canonicalize_name(i['name']) not in requested for i in changes):
-        return {'executable': False, 'changes': changes, 'message': '方案还会改动其他依赖，当前版本仅展示，拒绝自动执行。'}
+    changes = []
+    for item in raw.get('install', []):
+        name = canonicalize_name(item['metadata']['name'])
+        version = item['metadata']['version']
+        if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,150}', name) or not re.fullmatch(r'[0-9][A-Za-z0-9.!+_-]{0,79}', version):
+            raise ValueError('安装方案包含不支持的包名或版本')
+        changes.append({'name': name, 'version': version, 'installed': installed.get(name), 'direct': name in requested})
+    # Confirm the complete resolver plan, including companion dependencies. Pin
+    # every changed package and disable further resolution during execution.
+    specs = list(dict.fromkeys(specs + [c['name'] + '==' + c['version'] for c in changes]))
     token = secrets.token_urlsafe(24)
     if len(_tickets) > 100:
         _tickets.clear()
     _tickets[token] = {'specs': specs, 'before': before, 'expires': time.time() + 600}
-    return {'token': token, 'executable': True, 'changes': changes, 'message': '仅安装所选核心包的指定版本；不会自动重启。'}
+    return {'token': token, 'executable': True, 'changes': changes, 'message': '安装所选核心包及下列配套依赖，全部固定为确认的版本；不会自动重启。'}
 
 def execute(token):
     if not _lock.acquire(blocking=False):
@@ -95,8 +101,8 @@ def execute(token):
             raise ValueError('预览已过期，请重新检查')
         if fingerprint() != ticket['before']:
             raise ValueError('依赖环境已变化，请重新预览')
-        # Preview rejected any transitive changes. --no-deps guarantees execution
-        # cannot introduce a resolver cascade after confirmation.
+        # All resolver changes were included and pinned in the confirmation.
+        # --no-deps prevents introducing any additional unpreviewed packages.
         p = subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-deps', '--disable-pip-version-check', '--no-input', *ticket['specs']], capture_output=True, text=True, timeout=600)
         actual = dict(inventory())
         verified = all(actual.get(s.split('==')[0]) == s.split('==')[1] for s in ticket['specs'])
