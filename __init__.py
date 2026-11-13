@@ -1201,6 +1201,39 @@ async def environment_inventory(request):
     return web.json_response(await loop.run_in_executor(None, collect))
 
 
+from . import environment_actions as _environment_actions
+
+
+@routes.post('/extension_manager/environment/analyze')
+async def environment_analyze(request):
+    try:
+        body = await request.json()
+        result = await asyncio.get_event_loop().run_in_executor(None, _environment_actions.analyze, body.get('name', ''))
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({'error': str(exc)}, status=400)
+
+
+@routes.post('/extension_manager/environment/plan')
+async def environment_plan(request):
+    try:
+        body = await request.json()
+        result = await asyncio.get_event_loop().run_in_executor(None, _environment_actions.plan, body.get('items'))
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({'error': str(exc)}, status=400)
+
+
+@routes.post('/extension_manager/environment/execute')
+async def environment_execute(request):
+    try:
+        body = await request.json()
+        result = await asyncio.get_event_loop().run_in_executor(None, _environment_actions.execute, body.get('token'))
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({'error': str(exc)}, status=400)
+
+
 # ================ ComfyUI 本体版本 ================
 
 @routes.get("/extension_manager/comfyui/version")
